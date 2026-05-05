@@ -51,6 +51,7 @@ ExportedObj/
 *.csproj
 *.unityproj
 *.sln
+*.slnx
 *.suo
 *.tmp
 *.user
@@ -62,6 +63,7 @@ ExportedObj/
 *.mdb
 *.opendb
 *.VC.db
+*.ps1
 
 # Unity3D generated meta files
 *.pidb.meta
@@ -105,3 +107,7 @@ InitTestScene*.unity*
 
 # Auto-generated scenes by play mode tests
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
+
+# Claude Code (solo project — no need to share)
+.claude/
+CLAUDE.md
