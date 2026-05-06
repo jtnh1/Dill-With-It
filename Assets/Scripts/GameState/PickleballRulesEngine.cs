@@ -231,6 +231,26 @@ public class PickleballRulesEngine : MonoBehaviour
         GameStateManager.Instance.TransitionTo(GameState.PreServe);
     }
 
+    public void ResetMatch()
+    {
+        StopAllCoroutines();
+
+        playerAScore = 0;
+        playerBScore = 0;
+        ServingPlayer = 0;
+        LastHit = LastHitState.None;
+        BounceCount = BallBounceCountState.Zero;
+        lastBounceSide = -1;
+
+        UIManager.Instance?.UpdateScoreBoard(playerAScore, playerBScore, ServingPlayer);
+
+        if (NetworkServer.active)
+            NetworkGameManager.Instance?.BroadcastScore(playerAScore, playerBScore, ServingPlayer, string.Empty);
+
+        PlaceBallAtServePosition();
+        GameStateManager.Instance?.TransitionTo(GameState.PreServe);
+    }
+
     public void RegisterBall(BallController newBall, bool placeAtServePosition = true)
     {
         if (newBall == null) return;

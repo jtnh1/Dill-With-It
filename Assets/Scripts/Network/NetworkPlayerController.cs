@@ -6,6 +6,9 @@ using UnityEngine;
 [RequireComponent(typeof(PlayerController))]
 public class NetworkPlayerController : NetworkBehaviour
 {
+    private const float ServerSwingReachAllowance = 0.9f;
+    private const float ServerSwingFrontArcAllowance = 0.2f;
+
     private PlayerController   _player;
     private PlayerInputHandler _input;
     private BallController     _ball;
@@ -62,17 +65,47 @@ public class NetworkPlayerController : NetworkBehaviour
         NetworkGameManager.Instance?.RestartMatch();
     }
 
+    [Server]
+    public void ServerResetForMatch(Vector3 position, Quaternion rotation)
+    {
+        ApplyMatchReset(position, rotation);
+        RpcResetForMatch(position, rotation);
+    }
+
+    [ClientRpc]
+    void RpcResetForMatch(Vector3 position, Quaternion rotation)
+    {
+        if (isServer) return;
+        ApplyMatchReset(position, rotation);
+    }
+
+    void ApplyMatchReset(Vector3 position, Quaternion rotation)
+    {
+        if (_player == null) _player = GetComponent<PlayerController>();
+        _player?.ResetForMatch(position, rotation, isLocalPlayer);
+    }
+
     // Called by PlayerController when the client (Player B) hits the ball.
     // Executes on the server using the server-synced transform position.
     [Command]
     public void CmdSwing(int swingTypeInt, float forceScale)
     {
         if (_ball == null) _ball = FindAnyObjectByType<BallController>();
-        if (_ball == null) return;
+        if (_player == null) _player = GetComponent<PlayerController>();
+        if (_ball == null || _player == null)
+        {
+            Debug.LogWarning($"[NetworkSwing] Rejected client swing: ball={_ball != null}, player={_player != null}", this);
+            return;
+        }
 
         var type = (SwingType)swingTypeInt;
-        _player.swingExecutor.Execute(type, _ball, transform, forceScale);
-        _ball.SetLastHitBy(1); // client is always Player B (index 1)
-        PickleballRulesEngine.Instance?.OnBallHit(1);
+        if (!_player.TryValidateSwing(type, ServerSwingReachAllowance, ServerSwingFrontArcAllowance, out float serverForceScale, out string rejectReason, _ball))
+        {
+            Debug.LogWarning($"[NetworkSwing] Rejected client swing {type}: {rejectReason}", this);
+            return;
+        }
+
+        Debug.Log($"[NetworkSwing] Accepted client swing {type}. clientScale={forceScale:F2}, serverScale={serverForceScale:F2}, state={GameStateManager.Instance?.CurrentState}");
+        _player.ExecuteConfirmedSwing(type, _ball, 1, serverForceScale); // client is always Player B (index 1)
     }
 }

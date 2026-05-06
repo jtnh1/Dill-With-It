@@ -36,6 +36,14 @@ public class StaminaSystem : MonoBehaviour
         _regenTimer = regenDelay;
     }
 
+    public void ResetStamina()
+    {
+        CurrentStamina = maxStamina;
+        _regenTimer = 0f;
+        _isSprinting = false;
+        OnStaminaChanged?.Invoke(CurrentStamina, maxStamina);
+    }
+
     void Drain(float amount)
     {
         CurrentStamina = Mathf.Max(0f, CurrentStamina - amount);

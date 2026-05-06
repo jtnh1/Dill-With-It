@@ -98,6 +98,28 @@ public class NetworkLobbyManager : NetworkRoomManager
         ServerChangeScene(GameplayScene);
     }
 
+    [Server]
+    public void ResetGamePlayersForRestart()
+    {
+        foreach (NetworkRoomPlayer slot in roomSlots)
+        {
+            if (slot == null) continue;
+
+            NetworkIdentity roomIdentity = slot.GetComponent<NetworkIdentity>();
+            NetworkConnectionToClient conn = roomIdentity != null ? roomIdentity.connectionToClient : null;
+            NetworkPlayerController player = conn?.identity != null
+                ? conn.identity.GetComponent<NetworkPlayerController>()
+                : null;
+
+            if (player == null) continue;
+
+            bool isA = slot.index == 0;
+            Vector3 pos = isA ? playerASpawnPos : playerBSpawnPos;
+            Quaternion rot = Quaternion.Euler(isA ? playerASpawnEuler : playerBSpawnEuler);
+            player.ServerResetForMatch(pos, rot);
+        }
+    }
+
     // ── Steam Callbacks ────────────────────────────────────────────────────────
 
     void OnLobbyCreated(LobbyCreated_t cb)

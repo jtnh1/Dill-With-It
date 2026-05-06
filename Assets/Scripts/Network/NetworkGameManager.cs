@@ -1,6 +1,5 @@
 using Mirror;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 
 // Server-authoritative singleton that broadcasts game state and score to all clients.
 // Place one instance in GameScene with a NetworkIdentity component.
@@ -28,11 +27,21 @@ public class NetworkGameManager : NetworkBehaviour
         GameStateManager.Instance?.ApplyRemoteTransition(state);
     }
 
-    // Called by NetworkPlayerController.CmdRequestRestart — reloads the game scene for all clients.
+    // Called by NetworkPlayerController.CmdRequestRestart — resets the active match for all clients.
     [Server]
     public void RestartMatch()
     {
-        NetworkManager.singleton.ServerChangeScene(SceneManager.GetActiveScene().name);
+        if (NetworkServer.isLoadingScene) return;
+
+        NetworkLobbyManager.Instance?.ResetGamePlayersForRestart();
+        PickleballRulesEngine.Instance?.ResetMatch();
+        RpcPrepareRestartUi(0, 0, 0);
+    }
+
+    [ClientRpc]
+    void RpcPrepareRestartUi(int scoreA, int scoreB, int serving)
+    {
+        UIManager.Instance?.ShowGameplayForRestart(scoreA, scoreB, serving);
     }
 
     // Called by PickleballRulesEngine on server when a point is awarded.

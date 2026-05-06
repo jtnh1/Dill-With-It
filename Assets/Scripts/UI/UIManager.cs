@@ -28,6 +28,11 @@ public class UIManager : MonoBehaviour
     [Header("Game Over")]
     public Button playAgainButton;
 
+    private Button mainMenuMusicToggleButton;
+    private TextMeshProUGUI mainMenuMusicToggleText;
+    private int latestScoreA;
+    private int latestScoreB;
+
     [Header("Networking (Multiplayer Only)")]
     [Tooltip("Drag the NetworkLobbyManager prefab here. It is NOT placed in the scene — only instantiated when Host or Join is clicked.")]
     public GameObject networkManagerPrefab;
@@ -75,6 +80,8 @@ public class UIManager : MonoBehaviour
             // In MainMenu — always ensure cursor is visible (editor stop-play can leave it locked)
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
+            EnsureMainMenuAudioToggle();
+            ApplyMainMenuSceneAudioMute(IsMainMenuMusicMuted());
         }
     }
 
@@ -96,6 +103,9 @@ public class UIManager : MonoBehaviour
 
     public void UpdateScoreBoard(int scoreA, int scoreB, int serving)
     {
+        latestScoreA = scoreA;
+        latestScoreB = scoreB;
+
         // In multiplayer, scoreA = host, scoreB = client. Show the local player as YOU.
         bool isPureClient = NetworkClient.active && !NetworkServer.active;
         int myScore    = isPureClient ? scoreB : scoreA;
@@ -143,9 +153,9 @@ public class UIManager : MonoBehaviour
 
     void ShowGameOver()
     {
-        var rules = PickleballRulesEngine.Instance;
-        string winner = rules.playerAScore > rules.playerBScore ? "Host" : "Opponent";
-        if (gameOverText) gameOverText.text = $"{winner} Wins!";
+        int localPlayer = NetworkClient.active && !NetworkServer.active ? 1 : 0;
+        int winningPlayer = latestScoreA > latestScoreB ? 0 : 1;
+        if (gameOverText) gameOverText.text = winningPlayer == localPlayer ? "You Win!" : "You Lose!";
         ResolvePanelReferences();
         SetPanelActive(gameOverPanel, true);
         SetPanelActive(hudPanel, false);
@@ -167,15 +177,41 @@ public class UIManager : MonoBehaviour
     {
         if (NetworkClient.active || NetworkServer.active)
         {
-            // Multiplayer: ask the server to reload the scene for everyone.
+            // Multiplayer: ask the server to reset the active match for everyone.
             foreach (var npc in FindObjectsByType<NetworkPlayerController>(FindObjectsSortMode.None))
             {
                 if (npc.isLocalPlayer) { npc.CmdRequestRestart(); return; }
             }
+
+            if (NetworkServer.active)
+            {
+                NetworkGameManager.Instance?.RestartMatch();
+                return;
+            }
+
+            Debug.LogWarning("[UIManager] Could not find the local network player to request a restart.");
         }
         else
         {
             UnityEngine.SceneManagement.SceneManager.LoadScene("GameScene");
+        }
+    }
+
+    public void ShowGameplayForRestart(int scoreA, int scoreB, int serving)
+    {
+        ResolvePanelReferences();
+        SetPanelActive(gameOverPanel, false);
+        SetPanelActive(hudPanel, true);
+        if (announcementText != null) announcementText.gameObject.SetActive(false);
+        UpdateScoreBoard(scoreA, scoreB, serving);
+
+        if (EventSystem.current != null)
+            EventSystem.current.SetSelectedGameObject(null);
+
+        if (GameStateManager.Instance != null)
+        {
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
         }
     }
 
@@ -212,6 +248,24 @@ public class UIManager : MonoBehaviour
     public void OnQuitButton()
     {
         Application.Quit();
+    }
+
+    public void OnMainMenuMusicToggle()
+    {
+        bool muted;
+        if (SoundManager.Instance != null)
+        {
+            muted = SoundManager.Instance.ToggleMainMenuMusic();
+        }
+        else
+        {
+            muted = !IsMainMenuMusicMuted();
+            PlayerPrefs.SetInt(SoundManager.MainMenuMusicMutedKey, muted ? 1 : 0);
+            PlayerPrefs.Save();
+        }
+
+        ApplyMainMenuSceneAudioMute(muted);
+        RefreshMainMenuMusicToggleText();
     }
 
     // Instantiates the NetworkLobbyManager prefab the first time multiplayer is requested.
@@ -251,6 +305,83 @@ public class UIManager : MonoBehaviour
     {
         if (panel != null)
             panel.SetActive(active);
+    }
+
+    void EnsureMainMenuAudioToggle()
+    {
+        if (mainMenuPanel == null) ResolvePanelReferences();
+        if (mainMenuPanel == null) return;
+
+        Transform existing = mainMenuPanel.transform.Find("MusicToggleButton");
+        if (existing != null)
+        {
+            mainMenuMusicToggleButton = existing.GetComponent<Button>();
+            mainMenuMusicToggleText = existing.GetComponentInChildren<TextMeshProUGUI>(true);
+            ConfigureMainMenuMusicToggle(mainMenuMusicToggleButton);
+            RefreshMainMenuMusicToggleText();
+            return;
+        }
+
+        Button template = mainMenuPanel.GetComponentInChildren<Button>(true);
+        if (template == null) return;
+
+        Button button = Instantiate(template, mainMenuPanel.transform);
+        button.name = "MusicToggleButton";
+        mainMenuMusicToggleButton = button;
+
+        RectTransform rect = button.GetComponent<RectTransform>();
+        if (rect != null)
+        {
+            rect.anchorMin = new Vector2(0.5f, 0.5f);
+            rect.anchorMax = new Vector2(0.5f, 0.5f);
+            rect.anchoredPosition = new Vector2(0f, -330f);
+            rect.sizeDelta = new Vector2(180f, 30f);
+        }
+
+        mainMenuMusicToggleText = button.GetComponentInChildren<TextMeshProUGUI>(true);
+        ConfigureMainMenuMusicToggle(button);
+        RefreshMainMenuMusicToggleText();
+    }
+
+    void ConfigureMainMenuMusicToggle(Button button)
+    {
+        if (button == null) return;
+
+        // The toggle is cloned from a scene button, so replace the whole UnityEvent
+        // to drop any persistent Inspector listener copied from the template.
+        button.onClick = new Button.ButtonClickedEvent();
+        button.onClick.AddListener(OnMainMenuMusicToggle);
+        button.interactable = true;
+    }
+
+    void RefreshMainMenuMusicToggleText()
+    {
+        if (mainMenuMusicToggleText == null) return;
+        bool muted = IsMainMenuMusicMuted();
+        mainMenuMusicToggleText.text = muted ? "Music: Off" : "Music: On";
+    }
+
+    bool IsMainMenuMusicMuted()
+    {
+        if (SoundManager.Instance != null)
+            return SoundManager.Instance.IsMainMenuMusicMuted();
+
+        return PlayerPrefs.GetInt(SoundManager.MainMenuMusicMutedKey, 0) == 1;
+    }
+
+    void ApplyMainMenuSceneAudioMute(bool muted)
+    {
+        if (GameStateManager.Instance != null) return;
+
+        GameObject sceneSoundManager = FindSceneObjectByName("SoundManager");
+        if (sceneSoundManager != null)
+        {
+            foreach (AudioSource source in sceneSoundManager.GetComponents<AudioSource>())
+                source.mute = muted;
+        }
+
+        if (SoundManager.Instance != null && SoundManager.Instance.musicSource != null)
+            SoundManager.Instance.musicSource.mute = muted;
     }
 
     void EnsureUiInputReady()

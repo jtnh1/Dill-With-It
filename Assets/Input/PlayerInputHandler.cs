@@ -25,6 +25,7 @@ public class PlayerInputHandler : MonoBehaviour
     public event Action OnSmash;
     public event Action OnBlock;
     private PickleballInputActions.PlayerActions _player;
+    private bool _callbacksRegistered;
 
     private void OnEnable()
     {
@@ -37,20 +38,49 @@ public class PlayerInputHandler : MonoBehaviour
 
         inputManager.Initialize();
         _player = inputManager.actions.Player;
+        RegisterActionCallbacks();
+        ClearInputState();
+    }
 
-        _player.SwingForehand.performed += ctx => OnSwingForehand?.Invoke();
-        _player.SwingBackhand.performed += ctx => OnSwingBackhand?.Invoke();
-        _player.Dink.performed += ctx => OnDink?.Invoke();
-        _player.Lob.performed += ctx => OnLob?.Invoke();
-        _player.Smash.performed += ctx => OnSmash?.Invoke();
-        _player.Block.performed += ctx => OnBlock?.Invoke();
+    private void RegisterActionCallbacks()
+    {
+        if (_callbacksRegistered) return;
+
+        _player.SwingForehand.performed += HandleSwingForehand;
+        _player.SwingBackhand.performed += HandleSwingBackhand;
+        _player.Dink.performed += HandleDink;
+        _player.Lob.performed += HandleLob;
+        _player.Smash.performed += HandleSmash;
+        _player.Block.performed += HandleBlock;
+        _callbacksRegistered = true;
+    }
+
+    private void UnregisterActionCallbacks()
+    {
+        if (!_callbacksRegistered) return;
+
+        _player.SwingForehand.performed -= HandleSwingForehand;
+        _player.SwingBackhand.performed -= HandleSwingBackhand;
+        _player.Dink.performed -= HandleDink;
+        _player.Lob.performed -= HandleLob;
+        _player.Smash.performed -= HandleSmash;
+        _player.Block.performed -= HandleBlock;
+        _callbacksRegistered = false;
     }
 
     private void OnDisable()
     {
+        UnregisterActionCallbacks();
         ClearInputState();
         inputManager?.Disable();
     }
+
+    private void HandleSwingForehand(InputAction.CallbackContext ctx) => OnSwingForehand?.Invoke();
+    private void HandleSwingBackhand(InputAction.CallbackContext ctx) => OnSwingBackhand?.Invoke();
+    private void HandleDink(InputAction.CallbackContext ctx) => OnDink?.Invoke();
+    private void HandleLob(InputAction.CallbackContext ctx) => OnLob?.Invoke();
+    private void HandleSmash(InputAction.CallbackContext ctx) => OnSmash?.Invoke();
+    private void HandleBlock(InputAction.CallbackContext ctx) => OnBlock?.Invoke();
 
     public void ClearInputState()
     {
