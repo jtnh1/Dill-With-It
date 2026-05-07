@@ -72,6 +72,13 @@ public class NetworkPlayerController : NetworkBehaviour
         RpcResetForMatch(position, rotation);
     }
 
+    [Server]
+    public void ServerResetForServe(Vector3 position, Quaternion rotation)
+    {
+        ApplyServeReset(position, rotation);
+        RpcResetForServe(position, rotation);
+    }
+
     [ClientRpc]
     void RpcResetForMatch(Vector3 position, Quaternion rotation)
     {
@@ -79,10 +86,23 @@ public class NetworkPlayerController : NetworkBehaviour
         ApplyMatchReset(position, rotation);
     }
 
+    [ClientRpc]
+    void RpcResetForServe(Vector3 position, Quaternion rotation)
+    {
+        if (isServer) return;
+        ApplyServeReset(position, rotation);
+    }
+
     void ApplyMatchReset(Vector3 position, Quaternion rotation)
     {
         if (_player == null) _player = GetComponent<PlayerController>();
         _player?.ResetForMatch(position, rotation, isLocalPlayer);
+    }
+
+    void ApplyServeReset(Vector3 position, Quaternion rotation)
+    {
+        if (_player == null) _player = GetComponent<PlayerController>();
+        _player?.ResetForServePosition(position, rotation, isLocalPlayer);
     }
 
     // Called by PlayerController when the client (Player B) hits the ball.
@@ -107,5 +127,35 @@ public class NetworkPlayerController : NetworkBehaviour
 
         Debug.Log($"[NetworkSwing] Accepted client swing {type}. clientScale={forceScale:F2}, serverScale={serverForceScale:F2}, state={GameStateManager.Instance?.CurrentState}");
         _player.ExecuteConfirmedSwing(type, _ball, 1, serverForceScale); // client is always Player B (index 1)
+    }
+
+    [Command]
+    public void CmdServe(float normalizedPower)
+    {
+        if (_ball == null) _ball = FindAnyObjectByType<BallController>();
+        if (_player == null) _player = GetComponent<PlayerController>();
+        PickleballRulesEngine rules = PickleballRulesEngine.Instance;
+
+        if (_ball == null || _player == null || rules == null)
+        {
+            Debug.LogWarning($"[NetworkServe] Rejected client serve: ball={_ball != null}, player={_player != null}, rules={rules != null}", this);
+            return;
+        }
+
+        if (!rules.IsServeSetupActive || rules.ServingPlayer != 1)
+        {
+            Debug.LogWarning($"[NetworkServe] Rejected client serve: state={GameStateManager.Instance?.CurrentState}, serving={rules.ServingPlayer}, hit={rules.HasServeBeenHit}", this);
+            return;
+        }
+
+        if (!_player.TryValidateSwing(SwingType.Forehand, ServerSwingReachAllowance, ServerSwingFrontArcAllowance, out _, out string rejectReason, _ball))
+        {
+            Debug.LogWarning($"[NetworkServe] Rejected client serve: {rejectReason}", this);
+            return;
+        }
+
+        normalizedPower = Mathf.Clamp01(normalizedPower);
+        Debug.Log($"[NetworkServe] Accepted client serve. power={normalizedPower:F2}");
+        _player.ExecuteConfirmedServe(_ball, 1, normalizedPower); // client is always Player B (index 1)
     }
 }

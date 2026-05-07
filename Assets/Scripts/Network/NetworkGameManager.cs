@@ -41,6 +41,8 @@ public class NetworkGameManager : NetworkBehaviour
     [ClientRpc]
     void RpcPrepareRestartUi(int scoreA, int scoreB, int serving)
     {
+        if (!isServer)
+            PickleballRulesEngine.Instance?.ApplyRemoteScore(scoreA, scoreB, serving);
         UIManager.Instance?.ShowGameplayForRestart(scoreA, scoreB, serving);
     }
 
@@ -55,8 +57,22 @@ public class NetworkGameManager : NetworkBehaviour
     void RpcSyncScore(int scoreA, int scoreB, int serving, string announcement)
     {
         if (isServer) return;
+        PickleballRulesEngine.Instance?.ApplyRemoteScore(scoreA, scoreB, serving);
         UIManager.Instance?.UpdateScoreBoard(scoreA, scoreB, serving);
         if (!string.IsNullOrEmpty(announcement))
             UIManager.Instance?.ShowAnnouncement(announcement);
+    }
+
+    [Server]
+    public void BroadcastServeHit()
+    {
+        RpcSyncServeHit();
+    }
+
+    [ClientRpc]
+    void RpcSyncServeHit()
+    {
+        if (isServer) return;
+        PickleballRulesEngine.Instance?.ApplyRemoteServeHit();
     }
 }

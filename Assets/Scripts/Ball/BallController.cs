@@ -9,6 +9,13 @@ public class BallController : MonoBehaviour
     public float drag = 0.05f;
     public float CurrentSpeed => rb.linearVelocity.magnitude;
 
+    [Header("Net")]
+    [Tooltip("Velocity multiplier applied immediately after hitting the net so the ball dies instead of bouncing high.")]
+    [Range(0f, 1f)]
+    public float netVelocityDamping = 0.15f;
+    [Tooltip("Maximum upward velocity allowed after a net collision.")]
+    public float netMaxUpwardVelocity = 0.5f;
+
     private Rigidbody rb;
     private int lastHitByPlayer = 0;
     private ZoneID currentZone = ZoneID.OutOfBounds;
@@ -73,7 +80,18 @@ public class BallController : MonoBehaviour
         else if (col.gameObject.CompareTag("Out Of Bounds"))
             PickleballRulesEngine.Instance?.OnBallBounced(ZoneID.OutOfBounds, lastHitByPlayer);
         else if (col.gameObject.CompareTag("Net"))
+        {
+            DampenNetBounce();
             PickleballRulesEngine.Instance?.OnBallHitNet(lastHitByPlayer);
+        }
+    }
+
+    void DampenNetBounce()
+    {
+        Vector3 velocity = rb.linearVelocity * netVelocityDamping;
+        velocity.y = Mathf.Min(velocity.y, netMaxUpwardVelocity);
+        rb.linearVelocity = velocity;
+        rb.angularVelocity *= netVelocityDamping;
     }
 
     private void OnTriggerEnter(Collider other)

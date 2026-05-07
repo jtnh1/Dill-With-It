@@ -19,6 +19,8 @@ public class PlayerInputHandler : MonoBehaviour
 
     // One shot events, fire the exact same frame the key is pressed.
     public event Action OnSwingForehand;
+    public event Action OnSwingForehandStarted;
+    public event Action OnSwingForehandCanceled;
     public event Action OnSwingBackhand;
     public event Action OnDink;
     public event Action OnLob;
@@ -46,7 +48,9 @@ public class PlayerInputHandler : MonoBehaviour
     {
         if (_callbacksRegistered) return;
 
+        _player.SwingForehand.started += HandleSwingForehandStarted;
         _player.SwingForehand.performed += HandleSwingForehand;
+        _player.SwingForehand.canceled += HandleSwingForehandCanceled;
         _player.SwingBackhand.performed += HandleSwingBackhand;
         _player.Dink.performed += HandleDink;
         _player.Lob.performed += HandleLob;
@@ -59,7 +63,9 @@ public class PlayerInputHandler : MonoBehaviour
     {
         if (!_callbacksRegistered) return;
 
+        _player.SwingForehand.started -= HandleSwingForehandStarted;
         _player.SwingForehand.performed -= HandleSwingForehand;
+        _player.SwingForehand.canceled -= HandleSwingForehandCanceled;
         _player.SwingBackhand.performed -= HandleSwingBackhand;
         _player.Dink.performed -= HandleDink;
         _player.Lob.performed -= HandleLob;
@@ -75,7 +81,9 @@ public class PlayerInputHandler : MonoBehaviour
         inputManager?.Disable();
     }
 
+    private void HandleSwingForehandStarted(InputAction.CallbackContext ctx) => OnSwingForehandStarted?.Invoke();
     private void HandleSwingForehand(InputAction.CallbackContext ctx) => OnSwingForehand?.Invoke();
+    private void HandleSwingForehandCanceled(InputAction.CallbackContext ctx) => OnSwingForehandCanceled?.Invoke();
     private void HandleSwingBackhand(InputAction.CallbackContext ctx) => OnSwingBackhand?.Invoke();
     private void HandleDink(InputAction.CallbackContext ctx) => OnDink?.Invoke();
     private void HandleLob(InputAction.CallbackContext ctx) => OnLob?.Invoke();

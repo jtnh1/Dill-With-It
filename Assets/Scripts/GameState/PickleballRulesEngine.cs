@@ -28,6 +28,10 @@ public class PickleballRulesEngine : MonoBehaviour
     public Vector3 servePositionB = new Vector3(0f, 1.2f,  24.5f);
     [Tooltip("How far left/right of centre the ball is placed for each serve side.")]
     public float serveXOffset = 5f;
+    [Tooltip("Y height used when teleporting players into their side's serve zone.")]
+    public float playerServeY = 0.1f;
+    [Tooltip("Inset applied when clamping players inside a serve zone.")]
+    public float serveZoneClampMargin = 0.45f;
 
     // Companion states
     public LastHitState LastHit        { get; private set; } = LastHitState.None;
@@ -35,6 +39,11 @@ public class PickleballRulesEngine : MonoBehaviour
 
     // Who is currently serving: 0 = Player A, 1 = Player B
     public int ServingPlayer { get; private set; } = 0;
+    public bool HasServeBeenHit { get; private set; } = false;
+    public bool IsServeSetupActive =>
+        GameStateManager.Instance != null
+        && GameStateManager.Instance.CurrentState == GameState.PreServe
+        && !HasServeBeenHit;
 
     // Side that last absorbed a bounce in Rally (0 = A's side, 1 = B's side, -1 = none yet)
     private int lastBounceSide = -1;
@@ -48,7 +57,20 @@ public class PickleballRulesEngine : MonoBehaviour
     private void Start()
     {
         if (ball == null) ball = FindAnyObjectByType<BallController>();
-        if (ball != null) PlaceBallAtServePosition();
+        if (GameStateManager.Instance != null)
+            GameStateManager.Instance.OnStateChanged += OnGameStateChanged;
+
+        if (ball != null)
+        {
+            PlaceBallAtServePosition();
+            ResetPlayersToServeZones();
+        }
+    }
+
+    private void OnDestroy()
+    {
+        if (GameStateManager.Instance != null)
+            GameStateManager.Instance.OnStateChanged -= OnGameStateChanged;
     }
 
     // ── Entry points ──────────────────────────────────────────────────────────
@@ -61,6 +83,15 @@ public class PickleballRulesEngine : MonoBehaviour
     {
         if (NetworkClient.active && !NetworkServer.active) return; // clients don't run rules
         Debug.Log($"[OnBallHit] ----- Player = {playerIndex}");
+
+        if (GameStateManager.Instance.CurrentState == GameState.PreServe)
+        {
+            if (playerIndex != ServingPlayer) return;
+            HasServeBeenHit = true;
+            if (NetworkServer.active)
+                NetworkGameManager.Instance?.BroadcastServeHit();
+        }
+
         LastHit = playerIndex == 0 ? LastHitState.PlayerA : LastHitState.PlayerB;
         OnHit?.Invoke(playerIndex);
 
@@ -227,7 +258,9 @@ public class PickleballRulesEngine : MonoBehaviour
         LastHit        = LastHitState.None;
         BounceCount    = BallBounceCountState.Zero;
         lastBounceSide = -1;
+        HasServeBeenHit = false;
         PlaceBallAtServePosition();
+        ResetPlayersToServeZones();
         GameStateManager.Instance.TransitionTo(GameState.PreServe);
     }
 
@@ -241,6 +274,7 @@ public class PickleballRulesEngine : MonoBehaviour
         LastHit = LastHitState.None;
         BounceCount = BallBounceCountState.Zero;
         lastBounceSide = -1;
+        HasServeBeenHit = false;
 
         UIManager.Instance?.UpdateScoreBoard(playerAScore, playerBScore, ServingPlayer);
 
@@ -248,6 +282,7 @@ public class PickleballRulesEngine : MonoBehaviour
             NetworkGameManager.Instance?.BroadcastScore(playerAScore, playerBScore, ServingPlayer, string.Empty);
 
         PlaceBallAtServePosition();
+        ResetPlayersToServeZones();
         GameStateManager.Instance?.TransitionTo(GameState.PreServe);
     }
 
@@ -257,7 +292,48 @@ public class PickleballRulesEngine : MonoBehaviour
 
         ball = newBall;
         if (placeAtServePosition)
+        {
             PlaceBallAtServePosition();
+            ResetPlayersToServeZones();
+        }
+    }
+
+    public void ApplyRemoteScore(int scoreA, int scoreB, int serving)
+    {
+        playerAScore = scoreA;
+        playerBScore = scoreB;
+        ServingPlayer = serving;
+    }
+
+    public void ApplyRemoteServeHit()
+    {
+        HasServeBeenHit = true;
+    }
+
+    public Vector3 GetServeZonePositionForPlayer(int playerIndex)
+    {
+        float x = GetServeZoneXForPlayer(playerIndex);
+        ZoneID zoneID = GetServeZoneIdForPlayer(playerIndex);
+        if (TryFindServeZoneBounds(zoneID, out Bounds bounds))
+            return new Vector3(bounds.center.x, playerServeY, bounds.center.z);
+
+        float z = playerIndex == 0 ? servePositionA.z : servePositionB.z;
+        return new Vector3(x, playerServeY, z);
+    }
+
+    public Quaternion GetServeRotationForPlayer(int playerIndex)
+    {
+        return Quaternion.Euler(0f, playerIndex == 0 ? 0f : 180f, 0f);
+    }
+
+    public Vector3 ClampPositionToServeZone(int playerIndex, Vector3 position)
+    {
+        if (!IsServeSetupActive) return position;
+        if (!TryGetServeZoneBounds(playerIndex, out Bounds bounds)) return position;
+
+        position.x = Mathf.Clamp(position.x, bounds.min.x + serveZoneClampMargin, bounds.max.x - serveZoneClampMargin);
+        position.z = Mathf.Clamp(position.z, bounds.min.z + serveZoneClampMargin, bounds.max.z - serveZoneClampMargin);
+        return position;
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
@@ -266,20 +342,88 @@ public class PickleballRulesEngine : MonoBehaviour
     {
         if (ball == null) return;
 
-        Vector3 pos;
-        if (ServingPlayer == 0)
-        {
-            float x = (playerAScore % 2 == 0) ? serveXOffset : -serveXOffset;
-            pos = new Vector3(x, servePositionA.y, servePositionA.z);
-        }
-        else
-        {
-            float x = (playerBScore % 2 == 0) ? -serveXOffset : serveXOffset;
-            pos = new Vector3(x, servePositionB.y, servePositionB.z);
-        }
+        Vector3 serveBase = ServingPlayer == 0 ? servePositionA : servePositionB;
+        Vector3 pos = new Vector3(GetServerServeX(), serveBase.y, serveBase.z);
 
         Debug.Log($"[PlaceBall] Placing at {pos} | server={NetworkServer.active} | ball={ball != null}");
         ball.ResetToPosition(pos);
+    }
+
+    float GetServerServeX()
+    {
+        if (ServingPlayer == 0)
+            return (playerAScore % 2 == 0) ? serveXOffset : -serveXOffset;
+
+        return (playerBScore % 2 == 0) ? -serveXOffset : serveXOffset;
+    }
+
+    void ResetPlayersToServeZones()
+    {
+        Vector3 posA = GetServeZonePositionForPlayer(0);
+        Vector3 posB = GetServeZonePositionForPlayer(1);
+        Quaternion rotA = GetServeRotationForPlayer(0);
+        Quaternion rotB = GetServeRotationForPlayer(1);
+
+        if (NetworkServer.active)
+        {
+            NetworkLobbyManager.Instance?.ResetGamePlayersForServe(posA, rotA, posB, rotB);
+            return;
+        }
+
+        PlayerController player = FindAnyObjectByType<PlayerController>();
+        if (player != null)
+            player.ResetForServePosition(posA, rotA, true);
+
+        AIBot ai = FindAnyObjectByType<AIBot>();
+        if (ai != null)
+            ai.ResetForServePosition(posB, rotB);
+    }
+
+    bool TryGetServeZoneBounds(int playerIndex, out Bounds bounds)
+    {
+        ZoneID zoneID = GetServeZoneIdForPlayer(playerIndex);
+        if (TryFindServeZoneBounds(zoneID, out bounds))
+            return true;
+
+        Vector3 center = GetServeZonePositionForPlayer(playerIndex);
+        bounds = new Bounds(center, new Vector3(10f, 1f, 5f));
+        return true;
+    }
+
+    bool TryFindServeZoneBounds(ZoneID zoneID, out Bounds bounds)
+    {
+        foreach (CourtZone zone in FindObjectsByType<CourtZone>(FindObjectsSortMode.None))
+        {
+            if (zone.zoneID != zoneID) continue;
+            Collider col = zone.GetComponent<Collider>();
+            if (col == null) break;
+            bounds = col.bounds;
+            return true;
+        }
+
+        bounds = default;
+        return false;
+    }
+
+    ZoneID GetServeZoneIdForPlayer(int playerIndex)
+    {
+        float x = GetServeZoneXForPlayer(playerIndex);
+        if (playerIndex == 0)
+            return x >= 0f ? ZoneID.Zone_A_Serve_Right : ZoneID.Zone_A_Serve_Left;
+
+        return x >= 0f ? ZoneID.Zone_B_Serve_Left : ZoneID.Zone_B_Serve_Right;
+    }
+
+    float GetServeZoneXForPlayer(int playerIndex)
+    {
+        float serverX = GetServerServeX();
+        return playerIndex == ServingPlayer ? serverX : -serverX;
+    }
+
+    void OnGameStateChanged(GameState from, GameState to)
+    {
+        if (to == GameState.PreServe)
+            HasServeBeenHit = false;
     }
 
     bool IsValidServeZone(ZoneID zone, int server)

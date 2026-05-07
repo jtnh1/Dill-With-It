@@ -120,6 +120,26 @@ public class NetworkLobbyManager : NetworkRoomManager
         }
     }
 
+    [Server]
+    public void ResetGamePlayersForServe(Vector3 posA, Quaternion rotA, Vector3 posB, Quaternion rotB)
+    {
+        foreach (NetworkRoomPlayer slot in roomSlots)
+        {
+            if (slot == null) continue;
+
+            NetworkIdentity roomIdentity = slot.GetComponent<NetworkIdentity>();
+            NetworkConnectionToClient conn = roomIdentity != null ? roomIdentity.connectionToClient : null;
+            NetworkPlayerController player = conn?.identity != null
+                ? conn.identity.GetComponent<NetworkPlayerController>()
+                : null;
+
+            if (player == null) continue;
+
+            bool isA = slot.index == 0;
+            player.ServerResetForServe(isA ? posA : posB, isA ? rotA : rotB);
+        }
+    }
+
     // ── Steam Callbacks ────────────────────────────────────────────────────────
 
     void OnLobbyCreated(LobbyCreated_t cb)

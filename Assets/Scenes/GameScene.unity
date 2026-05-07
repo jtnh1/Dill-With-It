@@ -3708,6 +3708,8 @@ MonoBehaviour:
   servePositionA: {x: 0, y: 1.4, z: -22.5}
   servePositionB: {x: 0, y: 1.4, z: 22.5}
   serveXOffset: 5
+  playerServeY: 0.1
+  serveZoneClampMargin: 0.45
 --- !u!1 &720139618
 GameObject:
   m_ObjectHideFlags: 0
@@ -12409,6 +12411,7 @@ MonoBehaviour:
   stickRotateSpeed: 160
   swingCooldown: 0.5
   staminaFullPowerFrac: 0.1
+  serveChargeSeconds: 1.25
 --- !u!1 &2634874906547942395
 GameObject:
   m_ObjectHideFlags: 0
@@ -14341,6 +14344,9 @@ MonoBehaviour:
   smashLift: 4
   blockForce: 20
   blockLift: 4
+  serveMinForce: 17
+  serveMaxForce: 30
+  serveLift: 8
   stamina: {fileID: 6255153471562818778}
 --- !u!1 &7672437388511740049
 GameObject:

@@ -179,16 +179,42 @@ public class AIBot : MonoBehaviour
         else
         {
             phase     = AIPhase.Receiving;
-            targetPos = basePosition;
+            targetPos = CurrentServeZonePosition();
         }
+    }
+
+    public void ResetForServePosition(Vector3 position, Quaternion rotation)
+    {
+        if (characterController == null)
+            characterController = GetComponent<CharacterController>();
+
+        bool controllerWasEnabled = characterController != null && characterController.enabled;
+        if (characterController != null) characterController.enabled = false;
+        transform.SetPositionAndRotation(position, rotation);
+        if (characterController != null) characterController.enabled = controllerWasEnabled;
+
+        targetPos = position;
+        reactionTimer = 0f;
+        swingCooldownTimer = 0f;
+        SetMoveAnim(0f);
     }
 
     // Returns the serve position for the current score (Player B faces −Z: even = right = −X).
     Vector3 CurrentServePosition()
     {
+        PickleballRulesEngine rules = PickleballRulesEngine.Instance;
+        if (rules != null)
+            return rules.GetServeZonePositionForPlayer(1);
+
         int score = PickleballRulesEngine.Instance?.playerBScore ?? 0;
         float x = (score % 2 == 0) ? -serveXOffset : serveXOffset;
         return new Vector3(x, serveStandPosition.y, serveStandPosition.z);
+    }
+
+    Vector3 CurrentServeZonePosition()
+    {
+        PickleballRulesEngine rules = PickleballRulesEngine.Instance;
+        return rules != null ? rules.GetServeZonePositionForPlayer(1) : CurrentServePosition();
     }
 
     // ── Zone targeting ────────────────────────────────────────────────────────
@@ -261,7 +287,7 @@ public class AIBot : MonoBehaviour
         // then compute velocity direction from the current stand position toward it.
         Vector3 landingSpot  = PickServeTargetPos(evenScore);
         Vector3 dir          = AimDirTo(landingSpot);
-        Vector3 serveVelocity = (dir * Random.Range(24f, 30f))  + (Vector3.up * 8f);
+        float servePower = Random.Range(0.65f, 1f);
 
         if (animator != null)
         {
@@ -269,7 +295,7 @@ public class AIBot : MonoBehaviour
             animator.SetTrigger(HashSwingTrigger);
         }
 
-        ball.ApplyForce(serveVelocity);
+        swingExecutor.ExecuteServe(ball, transform, servePower, dir);
         ball.SetLastHitBy(1);
         PickleballRulesEngine.Instance?.OnBallHit(1);
 
@@ -350,11 +376,13 @@ public class AIBot : MonoBehaviour
         {
             Vector3 move = dir.normalized * walkSpeed * Time.deltaTime;
             characterController.Move(new Vector3(move.x, Physics.gravity.y * Time.deltaTime, move.z));
+            ClampToServeZone();
             SetMoveAnim(1f);
         }
         else
         {
             ApplyGravity();
+            ClampToServeZone();
             SetMoveAnim(0f);
         }
     }
@@ -373,6 +401,20 @@ public class AIBot : MonoBehaviour
     }
 
     void SetMoveAnim(float value) => animator?.SetFloat(HashMoveZ, value);
+
+    void ClampToServeZone()
+    {
+        PickleballRulesEngine rules = PickleballRulesEngine.Instance;
+        if (rules == null || !rules.IsServeSetupActive) return;
+
+        Vector3 clamped = rules.ClampPositionToServeZone(1, transform.position);
+        if ((clamped - transform.position).sqrMagnitude < 0.0001f) return;
+
+        bool controllerWasEnabled = characterController != null && characterController.enabled;
+        if (characterController != null) characterController.enabled = false;
+        transform.position = clamped;
+        if (characterController != null) characterController.enabled = controllerWasEnabled;
+    }
 
     // ── Swing ─────────────────────────────────────────────────────────────────
 

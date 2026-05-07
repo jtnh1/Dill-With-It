@@ -28,6 +28,11 @@ public class SwingExecutor : MonoBehaviour
     [Tooltip("Upward component added to block so the return clears the net.")]
     public float blockLift = 4f;
 
+    [Header("Serve")]
+    public float serveMinForce = 17f;
+    public float serveMaxForce = 30f;
+    public float serveLift = 8f;
+
     [Header("References")]
     public StaminaSystem stamina;
 
@@ -84,5 +89,17 @@ public class SwingExecutor : MonoBehaviour
         }
 
         ball.ApplyForce(force * forceScale);
+    }
+
+    public void ExecuteServe(BallController ball, Transform playerTransform, float normalizedPower, Vector3 aimDir = default)
+    {
+        if (ball == null) return;
+
+        Vector3 fwd = (aimDir.sqrMagnitude > 0.01f)
+            ? new Vector3(aimDir.x, 0f, aimDir.z).normalized
+            : new Vector3(playerTransform.forward.x, 0f, playerTransform.forward.z).normalized;
+
+        float force = Mathf.Lerp(serveMinForce, serveMaxForce, Mathf.Clamp01(normalizedPower));
+        ball.ApplyForce(fwd * force + Vector3.up * serveLift);
     }
 }
