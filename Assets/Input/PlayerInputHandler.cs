@@ -22,10 +22,20 @@ public class PlayerInputHandler : MonoBehaviour
     public event Action OnSwingForehandStarted;
     public event Action OnSwingForehandCanceled;
     public event Action OnSwingBackhand;
+    public event Action OnSwingBackhandStarted;
+    public event Action OnSwingBackhandCanceled;
     public event Action OnDink;
+    public event Action OnDinkStarted;
+    public event Action OnDinkCanceled;
     public event Action OnLob;
+    public event Action OnLobStarted;
+    public event Action OnLobCanceled;
     public event Action OnSmash;
+    public event Action OnSmashStarted;
+    public event Action OnSmashCanceled;
     public event Action OnBlock;
+    public event Action OnBlockStarted;
+    public event Action OnBlockCanceled;
     private PickleballInputActions.PlayerActions _player;
     private bool _callbacksRegistered;
 
@@ -51,11 +61,21 @@ public class PlayerInputHandler : MonoBehaviour
         _player.SwingForehand.started += HandleSwingForehandStarted;
         _player.SwingForehand.performed += HandleSwingForehand;
         _player.SwingForehand.canceled += HandleSwingForehandCanceled;
+        _player.SwingBackhand.started += HandleSwingBackhandStarted;
         _player.SwingBackhand.performed += HandleSwingBackhand;
+        _player.SwingBackhand.canceled += HandleSwingBackhandCanceled;
+        _player.Dink.started += HandleDinkStarted;
         _player.Dink.performed += HandleDink;
+        _player.Dink.canceled += HandleDinkCanceled;
+        _player.Lob.started += HandleLobStarted;
         _player.Lob.performed += HandleLob;
+        _player.Lob.canceled += HandleLobCanceled;
+        _player.Smash.started += HandleSmashStarted;
         _player.Smash.performed += HandleSmash;
+        _player.Smash.canceled += HandleSmashCanceled;
+        _player.Block.started += HandleBlockStarted;
         _player.Block.performed += HandleBlock;
+        _player.Block.canceled += HandleBlockCanceled;
         _callbacksRegistered = true;
     }
 
@@ -66,11 +86,21 @@ public class PlayerInputHandler : MonoBehaviour
         _player.SwingForehand.started -= HandleSwingForehandStarted;
         _player.SwingForehand.performed -= HandleSwingForehand;
         _player.SwingForehand.canceled -= HandleSwingForehandCanceled;
+        _player.SwingBackhand.started -= HandleSwingBackhandStarted;
         _player.SwingBackhand.performed -= HandleSwingBackhand;
+        _player.SwingBackhand.canceled -= HandleSwingBackhandCanceled;
+        _player.Dink.started -= HandleDinkStarted;
         _player.Dink.performed -= HandleDink;
+        _player.Dink.canceled -= HandleDinkCanceled;
+        _player.Lob.started -= HandleLobStarted;
         _player.Lob.performed -= HandleLob;
+        _player.Lob.canceled -= HandleLobCanceled;
+        _player.Smash.started -= HandleSmashStarted;
         _player.Smash.performed -= HandleSmash;
+        _player.Smash.canceled -= HandleSmashCanceled;
+        _player.Block.started -= HandleBlockStarted;
         _player.Block.performed -= HandleBlock;
+        _player.Block.canceled -= HandleBlockCanceled;
         _callbacksRegistered = false;
     }
 
@@ -84,11 +114,21 @@ public class PlayerInputHandler : MonoBehaviour
     private void HandleSwingForehandStarted(InputAction.CallbackContext ctx) => OnSwingForehandStarted?.Invoke();
     private void HandleSwingForehand(InputAction.CallbackContext ctx) => OnSwingForehand?.Invoke();
     private void HandleSwingForehandCanceled(InputAction.CallbackContext ctx) => OnSwingForehandCanceled?.Invoke();
+    private void HandleSwingBackhandStarted(InputAction.CallbackContext ctx) => OnSwingBackhandStarted?.Invoke();
     private void HandleSwingBackhand(InputAction.CallbackContext ctx) => OnSwingBackhand?.Invoke();
+    private void HandleSwingBackhandCanceled(InputAction.CallbackContext ctx) => OnSwingBackhandCanceled?.Invoke();
+    private void HandleDinkStarted(InputAction.CallbackContext ctx) => OnDinkStarted?.Invoke();
     private void HandleDink(InputAction.CallbackContext ctx) => OnDink?.Invoke();
+    private void HandleDinkCanceled(InputAction.CallbackContext ctx) => OnDinkCanceled?.Invoke();
+    private void HandleLobStarted(InputAction.CallbackContext ctx) => OnLobStarted?.Invoke();
     private void HandleLob(InputAction.CallbackContext ctx) => OnLob?.Invoke();
+    private void HandleLobCanceled(InputAction.CallbackContext ctx) => OnLobCanceled?.Invoke();
+    private void HandleSmashStarted(InputAction.CallbackContext ctx) => OnSmashStarted?.Invoke();
     private void HandleSmash(InputAction.CallbackContext ctx) => OnSmash?.Invoke();
+    private void HandleSmashCanceled(InputAction.CallbackContext ctx) => OnSmashCanceled?.Invoke();
+    private void HandleBlockStarted(InputAction.CallbackContext ctx) => OnBlockStarted?.Invoke();
     private void HandleBlock(InputAction.CallbackContext ctx) => OnBlock?.Invoke();
+    private void HandleBlockCanceled(InputAction.CallbackContext ctx) => OnBlockCanceled?.Invoke();
 
     public void ClearInputState()
     {

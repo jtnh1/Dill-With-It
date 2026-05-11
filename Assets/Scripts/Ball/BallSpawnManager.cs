@@ -51,7 +51,11 @@ public class BallSpawnManager : MonoBehaviour
             yield break;
         }
 
-        while (FindObjectsByType<NetworkPlayerController>(FindObjectsSortMode.None).Length < requiredMultiplayerPlayers)
+        int requiredPlayers = NetworkLobbyManager.Instance != null
+            ? NetworkLobbyManager.Instance.RequiredPlayerCount
+            : requiredMultiplayerPlayers;
+
+        while (FindObjectsByType<NetworkPlayerController>(FindObjectsSortMode.None).Length < requiredPlayers)
             yield return null;
 
         spawnedBall = Instantiate(multiplayerBallPrefab);

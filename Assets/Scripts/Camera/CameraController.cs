@@ -22,15 +22,15 @@ public class CameraController : MonoBehaviour
     public float positionSmooth = 6f;
 
     private Transform _target;
-    private bool      _isPlayerB;
+    private int       _teamId;
     private bool      _snapped;   // snap on first valid frame so PlayerController reads correct axes
 
     // Called by NetworkPlayerController.OnStartLocalPlayer so the camera is
     // registered at the exact moment Mirror marks this machine's player object.
     public void RegisterLocalPlayer(Transform player)
     {
-        _isPlayerB = NetworkClient.active && !NetworkServer.active;
         _target = player;
+        _teamId = ResolveTeamId(player);
     }
 
     private void Start()
@@ -52,9 +52,8 @@ public class CameraController : MonoBehaviour
             if (_target == null) return;
         }
 
-        // Player A (-Z side): camera goes further -Z (behind baseline). behindSign = -1.
-        // Player B (+Z side): camera goes further +Z (behind baseline). behindSign = +1.
-        float behindSign = _isPlayerB ? 1f : -1f;
+        // Team A (-Z side): camera goes further -Z. Team B (+Z side): camera goes further +Z.
+        float behindSign = _teamId == 1 ? 1f : -1f;
 
         Vector3 desired = new Vector3(
             _target.position.x,
@@ -92,6 +91,7 @@ public class CameraController : MonoBehaviour
                 if (ni.isLocalPlayer)
                 {
                     _target = ni.transform;
+                    _teamId = ResolveTeamId(ni.transform);
                     return;
                 }
             }
@@ -100,7 +100,22 @@ public class CameraController : MonoBehaviour
         {
             // Singleplayer: grab the PlayerController directly.
             var pc = FindAnyObjectByType<PlayerController>();
-            if (pc) _target = pc.transform;
+            if (pc)
+            {
+                _target = pc.transform;
+                _teamId = ResolveTeamId(pc.transform);
+            }
         }
+    }
+
+    int ResolveTeamId(Transform player)
+    {
+        if (player != null && player.TryGetComponent(out PlayerIdentity identity) && identity.IsAssigned)
+            return identity.TeamId;
+
+        if (player != null && player.TryGetComponent(out NetworkPlayerController networkPlayer))
+            return networkPlayer.TeamId;
+
+        return NetworkClient.active && !NetworkServer.active ? 1 : 0;
     }
 }

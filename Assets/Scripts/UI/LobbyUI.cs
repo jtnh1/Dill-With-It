@@ -39,7 +39,11 @@ public class LobbyUI : MonoBehaviour
             entry.GetComponentInChildren<TextMeshProUGUI>().text = $"{p.name}  {(p.isReady ? "R" : "...")}";
         }
 
-        bool canStart = players.Count >= 2
+        int requiredPlayers = NetworkLobbyManager.Instance != null
+            ? NetworkLobbyManager.Instance.RequiredPlayerCount
+            : 2;
+
+        bool canStart = players.Count >= requiredPlayers
             && players.TrueForAll(p => p.isReady)
             && NetworkLobbyManager.Instance != null
             && NetworkLobbyManager.Instance.IsHost;

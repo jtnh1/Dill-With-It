@@ -7,8 +7,6 @@ public class PlayerAnimationEvents : MonoBehaviour
 
     public void OnSwingHitFrame()
     {
-        // Visual Feedback - VFX already fired in SwingExecutor
-        // Can hook additional sounds here
-        SoundManager.Instance?.PlaySwingSound();
+        // Contact audio is played only from confirmed hit paths in PlayerController/AIBot.
     }
 }

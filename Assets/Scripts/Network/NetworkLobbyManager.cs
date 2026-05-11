@@ -9,10 +9,16 @@ public class NetworkLobbyManager : NetworkRoomManager
     public static NetworkLobbyManager Instance { get; private set; }
 
     public bool IsHost => NetworkServer.active && NetworkClient.isConnected;
+    public int RequiredPlayerCount => matchMode == MatchMode.Doubles ? 4 : 2;
+
+    [Header("Match")]
+    public MatchMode matchMode = MatchMode.Doubles;
 
     [Header("Spawn Positions")]
     public Vector3 playerASpawnPos = new Vector3( 5f, 0.1f, -24.5f);
     public Vector3 playerBSpawnPos = new Vector3(-5f, 0.1f,  24.5f);
+    public Vector3 playerAPartnerSpawnPos = new Vector3(-5f, 0.1f, -24.5f);
+    public Vector3 playerBPartnerSpawnPos = new Vector3( 5f, 0.1f,  24.5f);
     public Vector3 playerASpawnEuler = new Vector3(0f,   0f, 0f);
     public Vector3 playerBSpawnEuler = new Vector3(0f, 180f, 0f);
 
@@ -34,6 +40,8 @@ public class NetworkLobbyManager : NetworkRoomManager
         base.Awake();
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
         Instance = this;
+        matchMode = MatchSessionConfig.SelectedMatchMode;
+        maxConnections = RequiredPlayerCount;
     }
 
     private void OnEnable()
@@ -62,6 +70,8 @@ public class NetworkLobbyManager : NetworkRoomManager
             Debug.LogWarning("[NetworkLobbyManager] Steam not initialized — cannot host.");
             return;
         }
+        matchMode = MatchSessionConfig.SelectedMatchMode;
+        maxConnections = RequiredPlayerCount;
         SteamMatchmaking.CreateLobby(ELobbyType.k_ELobbyTypeFriendsOnly, maxConnections);
         // StartHost() is called inside OnLobbyCreated once Steam confirms.
     }
@@ -95,6 +105,7 @@ public class NetworkLobbyManager : NetworkRoomManager
     public void StartMatch()
     {
         if (!IsHost) return;
+        if (roomSlots.Count < RequiredPlayerCount) return;
         ServerChangeScene(GameplayScene);
     }
 
@@ -113,16 +124,19 @@ public class NetworkLobbyManager : NetworkRoomManager
 
             if (player == null) continue;
 
-            bool isA = slot.index == 0;
-            Vector3 pos = isA ? playerASpawnPos : playerBSpawnPos;
-            Quaternion rot = Quaternion.Euler(isA ? playerASpawnEuler : playerBSpawnEuler);
+            NetworkPlayerController networkPlayer = player.GetComponent<NetworkPlayerController>();
+            int playerId = networkPlayer != null ? networkPlayer.PlayerId : GetPlayerIdForRoomIndex(slot.index);
+            GetSpawnPoseForPlayer(playerId, out Vector3 pos, out Quaternion rot);
             player.ServerResetForMatch(pos, rot);
         }
     }
 
     [Server]
-    public void ResetGamePlayersForServe(Vector3 posA, Quaternion rotA, Vector3 posB, Quaternion rotB)
+    public void ResetGamePlayersForServe()
     {
+        PickleballRulesEngine rules = PickleballRulesEngine.Instance;
+        if (rules == null) return;
+
         foreach (NetworkRoomPlayer slot in roomSlots)
         {
             if (slot == null) continue;
@@ -135,8 +149,9 @@ public class NetworkLobbyManager : NetworkRoomManager
 
             if (player == null) continue;
 
-            bool isA = slot.index == 0;
-            player.ServerResetForServe(isA ? posA : posB, isA ? rotA : rotB);
+            Vector3 pos = rules.GetServeZonePositionForPlayer(player.PlayerId);
+            Quaternion rot = rules.GetServeRotationForPlayer(player.PlayerId);
+            player.ServerResetForServe(pos, rot);
         }
     }
 
@@ -152,6 +167,7 @@ public class NetworkLobbyManager : NetworkRoomManager
         _currentLobby = new CSteamID(cb.m_ulSteamIDLobby);
         SteamMatchmaking.SetLobbyData(_currentLobby, "hostName", SteamFriends.GetPersonaName());
         SteamMatchmaking.SetLobbyData(_currentLobby, "game",     "DillWithIt");
+        SteamMatchmaking.SetLobbyData(_currentLobby, "mode",     matchMode.ToString());
         StartHost();
     }
 
@@ -160,6 +176,12 @@ public class NetworkLobbyManager : NetworkRoomManager
         if (!_joiningLobby) return; // host entering their own lobby — ignore
         _joiningLobby = false;
         _currentLobby = new CSteamID(cb.m_ulSteamIDLobby);
+        if (Enum.TryParse(SteamMatchmaking.GetLobbyData(_currentLobby, "mode"), out MatchMode lobbyMode))
+        {
+            matchMode = lobbyMode;
+            MatchSessionConfig.SetMode(lobbyMode);
+            maxConnections = RequiredPlayerCount;
+        }
 
         CSteamID hostID = SteamMatchmaking.GetLobbyOwner(_currentLobby);
         networkAddress  = hostID.ToString();
@@ -245,12 +267,13 @@ public class NetworkLobbyManager : NetworkRoomManager
         NetworkConnectionToClient conn, GameObject roomPlayerGO)
     {
         var rp   = roomPlayerGO.GetComponent<NetworkRoomPlayer>();
-        bool isA = rp == null || rp.index == 0;
+        int roomIndex = rp != null ? rp.index : 0;
+        GetIdentityForRoomIndex(roomIndex, out int playerId, out int teamId, out int teamSlot);
+        GetSpawnPoseForPlayer(playerId, out Vector3 pos, out Quaternion rot);
 
-        Vector3    pos = isA ? playerASpawnPos   : playerBSpawnPos;
-        Quaternion rot = Quaternion.Euler(isA ? playerASpawnEuler : playerBSpawnEuler);
-
-        return Instantiate(playerPrefab, pos, rot);
+        GameObject player = Instantiate(playerPrefab, pos, rot);
+        player.GetComponent<NetworkPlayerController>()?.ServerConfigureIdentity(playerId, teamId, teamSlot);
+        return player;
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
@@ -278,10 +301,64 @@ public class NetworkLobbyManager : NetworkRoomManager
             if (rp == null) continue;
             list.Add(new LobbyPlayerData
             {
-                name    = $"Player {rp.index + 1}",
+                name    = GetLobbyDisplayName(rp.index),
                 isReady = rp.readyToBegin
             });
         }
         return list;
+    }
+
+    void GetIdentityForRoomIndex(int roomIndex, out int playerId, out int teamId, out int teamSlot)
+    {
+        if (matchMode == MatchMode.Doubles)
+        {
+            playerId = roomIndex switch
+            {
+                0 => 0,
+                1 => 1,
+                2 => 2,
+                3 => 3,
+                _ => roomIndex
+            };
+            teamId = PlayerIdentity.TeamOfPlayer(playerId);
+            teamSlot = PlayerIdentity.SlotOfPlayer(playerId);
+            return;
+        }
+
+        playerId = roomIndex == 0 ? 0 : 1;
+        teamId = playerId;
+        teamSlot = 0;
+    }
+
+    int GetPlayerIdForRoomIndex(int roomIndex)
+    {
+        GetIdentityForRoomIndex(roomIndex, out int playerId, out _, out _);
+        return playerId;
+    }
+
+    void GetSpawnPoseForPlayer(int playerId, out Vector3 position, out Quaternion rotation)
+    {
+        int team = PlayerIdentity.TeamOfPlayer(playerId);
+        int slot = PlayerIdentity.SlotOfPlayer(playerId);
+
+        if (team == 0)
+        {
+            position = slot == 0 ? playerASpawnPos : playerAPartnerSpawnPos;
+            rotation = Quaternion.Euler(playerASpawnEuler);
+            return;
+        }
+
+        position = slot == 0 ? playerBSpawnPos : playerBPartnerSpawnPos;
+        rotation = Quaternion.Euler(playerBSpawnEuler);
+    }
+
+    string GetLobbyDisplayName(int roomIndex)
+    {
+        GetIdentityForRoomIndex(roomIndex, out int playerId, out int teamId, out int teamSlot);
+        string teamName = teamId == 0 ? "Team A" : "Team B";
+        string slotName = teamSlot == 0 ? "Server Slot" : "Partner Slot";
+        return matchMode == MatchMode.Doubles
+            ? $"{teamName} {slotName} (P{playerId + 1})"
+            : $"Player {playerId + 1}";
     }
 }

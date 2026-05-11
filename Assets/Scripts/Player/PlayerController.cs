@@ -43,6 +43,8 @@ public class PlayerController : MonoBehaviour
 
     [Header("Swing")]
     public float swingCooldown = 0.5f;
+    [Tooltip("Seconds required for regular rally swings to reach full charged power.")]
+    public float swingChargeSeconds = 0.8f;
     [Tooltip("Stamina floor for forehand/backhand. Below this fraction of max stamina, force scales down to 50 %.")]
     [Range(0f, 1f)]
     public float staminaFullPowerFrac = 0.1f;
@@ -59,6 +61,9 @@ public class PlayerController : MonoBehaviour
     private bool serveCharging;
     private float serveChargeTimer;
     private int serveChargeDirection = 1;
+    private bool swingCharging;
+    private SwingType chargedSwingType = SwingType.None;
+    private float swingChargeTimer;
     private WorldServePowerBar servePowerBar;
     private Vector3 _camForward;
     private Vector3 _camRight;
@@ -96,12 +101,18 @@ public class PlayerController : MonoBehaviour
 
         inputHandler.OnSwingForehandStarted += BeginServeCharge;
         inputHandler.OnSwingForehandCanceled += ReleaseServeCharge;
-        inputHandler.OnSwingForehand += () => HandleSwingPerformed(SwingType.Forehand);
-        inputHandler.OnSwingBackhand += () => HandleSwingPerformed(SwingType.Backhand);
-        inputHandler.OnDink         += () => HandleSwingPerformed(SwingType.Dink);
-        inputHandler.OnLob          += () => HandleSwingPerformed(SwingType.Lob);
-        inputHandler.OnSmash        += () => HandleSwingPerformed(SwingType.Smash);
-        inputHandler.OnBlock        += () => HandleSwingPerformed(SwingType.Block);
+        inputHandler.OnSwingForehandStarted += () => BeginSwingCharge(SwingType.Forehand);
+        inputHandler.OnSwingForehandCanceled += () => ReleaseSwingCharge(SwingType.Forehand);
+        inputHandler.OnSwingBackhandStarted += () => BeginSwingCharge(SwingType.Backhand);
+        inputHandler.OnSwingBackhandCanceled += () => ReleaseSwingCharge(SwingType.Backhand);
+        inputHandler.OnDinkStarted += () => BeginSwingCharge(SwingType.Dink);
+        inputHandler.OnDinkCanceled += () => ReleaseSwingCharge(SwingType.Dink);
+        inputHandler.OnLobStarted += () => BeginSwingCharge(SwingType.Lob);
+        inputHandler.OnLobCanceled += () => ReleaseSwingCharge(SwingType.Lob);
+        inputHandler.OnSmashStarted += () => BeginSwingCharge(SwingType.Smash);
+        inputHandler.OnSmashCanceled += () => ReleaseSwingCharge(SwingType.Smash);
+        inputHandler.OnBlockStarted += () => BeginSwingCharge(SwingType.Block);
+        inputHandler.OnBlockCanceled += () => ReleaseSwingCharge(SwingType.Block);
 
         if (GameStateManager.Instance != null)
             GameStateManager.Instance.OnStateChanged += OnGameStateChanged;
@@ -131,6 +142,7 @@ public class PlayerController : MonoBehaviour
         if (swingCooldownTimer > 0f) swingCooldownTimer -= Time.deltaTime;
         if (inputGraceTimer   > 0f) inputGraceTimer   -= Time.deltaTime;
         UpdateServeCharge();
+        UpdateSwingCharge();
         HandleRotation();
         HandleMovement();
 
@@ -159,6 +171,7 @@ public class PlayerController : MonoBehaviour
         animator?.SetFloat(HashMoveZ, 0f);
         animator?.SetBool(HashIsSprint, false);
         CancelServeCharge();
+        CancelSwingCharge();
 
         if (enableLocalControl)
             EnableGameplayControl();
@@ -183,6 +196,7 @@ public class PlayerController : MonoBehaviour
         animator?.SetFloat(HashMoveZ, 0f);
         animator?.SetBool(HashIsSprint, false);
         CancelServeCharge();
+        CancelSwingCharge();
 
         if (enableLocalControl)
             EnableGameplayControl();
@@ -238,19 +252,21 @@ public class PlayerController : MonoBehaviour
         StopServeChargeIfOutOfRange();
     }
 
-    void HandleSwingPerformed(SwingType requestedType)
-    {
-        if (IsPreServePhase()) return;
-        AttemptSwing(requestedType);
-    }
-
-    void AttemptSwing(SwingType requestedType)
+    void AttemptSwing(SwingType requestedType, float chargedPower = 1f)
     {
         var netId = GetComponent<NetworkIdentity>();
         if (netId != null && (NetworkClient.active || NetworkServer.active) && !netId.isLocalPlayer) return;
         if (swingCooldownTimer > 0f)
         {
             Debug.Log($"[PlayerSwing] Rejected {requestedType}: cooldown {swingCooldownTimer:F2}s remaining.", this);
+            return;
+        }
+
+        if (IsPreServePhase())
+        {
+            Debug.Log($"[PlayerSwing] Released {requestedType} before serve return was legal.", this);
+            animationDriver.PlaySwing(requestedType);
+            swingCooldownTimer = swingCooldown;
             return;
         }
 
@@ -264,7 +280,6 @@ public class PlayerController : MonoBehaviour
         {
             Debug.Log($"[PlayerSwing] Rejected {requestedType}: {rejectReason}", this);
             animationDriver.PlaySwing(requestedType);
-            SoundManager.Instance?.PlaySwingSound();
             swingCooldownTimer = swingCooldown;
             return;
         }
@@ -273,16 +288,18 @@ public class PlayerController : MonoBehaviour
         VFXManager.Instance?.PlaySwingBurst(ball.transform.position);
         SoundManager.Instance?.PlaySwingSound();
         swingCooldownTimer = swingCooldown;
+        float horizontalPowerScale = swingExecutor != null
+            ? swingExecutor.GetSwingPowerMultiplier(requestedType, chargedPower)
+            : 1f;
 
         if (!isMultiplayer || isServer)
         {
-            // Singleplayer or host (always Player A, index 0).
-            ExecuteConfirmedSwing(requestedType, ball, 0, forceScale);
+            ExecuteConfirmedSwing(requestedType, ball, GetLocalPlayerIndex(), forceScale, horizontalPowerScale);
         }
         else
         {
             // Client (Player B, index 1) — send to server for authoritative execution.
-            GetComponent<NetworkPlayerController>()?.CmdSwing((int)requestedType, forceScale);
+            GetComponent<NetworkPlayerController>()?.CmdSwing((int)requestedType, forceScale, chargedPower);
         }
     }
 
@@ -350,13 +367,54 @@ public class PlayerController : MonoBehaviour
         return true;
     }
 
-    public void ExecuteConfirmedSwing(SwingType requestedType, BallController targetBall, int playerIndex, float forceScale)
+    public void ExecuteConfirmedSwing(SwingType requestedType, BallController targetBall, int playerIndex, float forceScale, float horizontalPowerScale = 1f)
     {
         if (targetBall == null) return;
 
-        swingExecutor.Execute(requestedType, targetBall, transform, forceScale);
+        swingExecutor.Execute(requestedType, targetBall, transform, forceScale, Vector3.zero, horizontalPowerScale);
         targetBall.SetLastHitBy(playerIndex);
-        PickleballRulesEngine.Instance?.OnBallHit(playerIndex);
+        PickleballRulesEngine.Instance?.OnBallHit(playerIndex, transform.position);
+    }
+
+    void BeginSwingCharge(SwingType swingType)
+    {
+        if (!CanChargeRegularSwing()) return;
+        if (!IsLocalGameplayOwner()) return;
+        if (swingCooldownTimer > 0f) return;
+        if (swingCharging) return;
+
+        swingCharging = true;
+        chargedSwingType = swingType;
+        swingChargeTimer = 0f;
+    }
+
+    void ReleaseSwingCharge(SwingType swingType)
+    {
+        if (!swingCharging || chargedSwingType != swingType) return;
+
+        float chargedPower = Mathf.Clamp01(swingChargeTimer / Mathf.Max(0.01f, swingChargeSeconds));
+        CancelSwingCharge();
+        AttemptSwing(swingType, chargedPower);
+    }
+
+    void UpdateSwingCharge()
+    {
+        if (!swingCharging) return;
+
+        if (!CanChargeRegularSwing() || !IsLocalGameplayOwner())
+        {
+            CancelSwingCharge();
+            return;
+        }
+
+        swingChargeTimer = Mathf.Min(swingChargeTimer + Time.deltaTime, swingChargeSeconds);
+    }
+
+    void CancelSwingCharge()
+    {
+        swingCharging = false;
+        chargedSwingType = SwingType.None;
+        swingChargeTimer = 0f;
     }
 
     public void ExecuteConfirmedServe(BallController targetBall, int playerIndex, float normalizedPower)
@@ -365,7 +423,7 @@ public class PlayerController : MonoBehaviour
 
         swingExecutor.ExecuteServe(targetBall, transform, normalizedPower);
         targetBall.SetLastHitBy(playerIndex);
-        PickleballRulesEngine.Instance?.OnBallHit(playerIndex);
+        PickleballRulesEngine.Instance?.OnBallHit(playerIndex, transform.position);
     }
 
     void BeginServeCharge()
@@ -454,6 +512,16 @@ public class PlayerController : MonoBehaviour
             && IsServeBallInRange();
     }
 
+    bool CanChargeRegularSwing()
+    {
+        if (!IsPreServePhase()) return true;
+
+        PickleballRulesEngine rules = PickleballRulesEngine.Instance;
+        return rules != null
+            && rules.HasServeBeenHit
+            && rules.ServingTeam != GetLocalPlayerTeam();
+    }
+
     bool IsServeBallInRange()
     {
         return TryValidateSwing(SwingType.Forehand, 0f, 0f, out _, out _);
@@ -473,7 +541,28 @@ public class PlayerController : MonoBehaviour
 
     int GetLocalPlayerIndex()
     {
+        PlayerIdentity identity = GetComponent<PlayerIdentity>();
+        if (identity != null && identity.IsAssigned)
+            return identity.PlayerId;
+
+        NetworkPlayerController networkPlayer = GetComponent<NetworkPlayerController>();
+        if (networkPlayer != null)
+            return networkPlayer.PlayerId;
+
         return NetworkClient.active && !NetworkServer.active ? 1 : 0;
+    }
+
+    int GetLocalPlayerTeam()
+    {
+        PlayerIdentity identity = GetComponent<PlayerIdentity>();
+        if (identity != null && identity.IsAssigned)
+            return identity.TeamId;
+
+        NetworkPlayerController networkPlayer = GetComponent<NetworkPlayerController>();
+        if (networkPlayer != null)
+            return networkPlayer.TeamId;
+
+        return PlayerIdentity.TeamOfPlayer(GetLocalPlayerIndex());
     }
 
     void EnsureServePowerBar()

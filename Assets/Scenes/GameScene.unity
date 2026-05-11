@@ -3703,6 +3703,7 @@ MonoBehaviour:
   playerBScore: 0
   winningScore: 11
   mustWinBy: 2
+  matchMode: 0
   ball: {fileID: 0}
   ballResetDelay: 2
   servePositionA: {x: 0, y: 1.4, z: -22.5}
@@ -6070,7 +6071,10 @@ MonoBehaviour:
   joinPanel: {fileID: 0}
   hudPanel: {fileID: 836236809}
   gameOverPanel: {fileID: 1206367834}
+  pausePanel: {fileID: 0}
   playAgainButton: {fileID: 0}
+  resumeButton: {fileID: 0}
+  pauseQuitButton: {fileID: 0}
   networkManagerPrefab: {fileID: 0}
 --- !u!1 &1102727422
 GameObject:
@@ -6603,7 +6607,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::BallSpawnManager
   singlePlayerBallPrefab: {fileID: 5485485641193736774, guid: 8c2d31c726a943b1aab7c15c6df76347, type: 3}
   multiplayerBallPrefab: {fileID: 5485485641193736774, guid: 378a396ab986e3944a05f02449becc1b, type: 3}
-  requiredMultiplayerPlayers: 2
+  requiredMultiplayerPlayers: 4
 --- !u!1 &1206367834
 GameObject:
   m_ObjectHideFlags: 0
@@ -12410,6 +12414,7 @@ MonoBehaviour:
   mouseSensitivity: 0.18
   stickRotateSpeed: 160
   swingCooldown: 0.5
+  swingChargeSeconds: 0.8
   staminaFullPowerFrac: 0.1
   serveChargeSeconds: 1.25
 --- !u!1 &2634874906547942395
@@ -14336,14 +14341,20 @@ MonoBehaviour:
   forehandForce: 27
   backhandForce: 25
   hitLift: 7
+  forehandPowerRange: {x: 0.75, y: 1.25}
+  backhandPowerRange: {x: 0.7, y: 1.2}
   dinkForce: 7
   dinkLift: 9
+  dinkPowerRange: {x: 0.6, y: 1.05}
   lobForce: 7
   lobUpward: 20
+  lobPowerRange: {x: 0.75, y: 1.15}
   smashForce: 35
   smashLift: 4
+  smashPowerRange: {x: 0.85, y: 1.3}
   blockForce: 20
   blockLift: 4
+  blockPowerRange: {x: 0.75, y: 1.1}
   serveMinForce: 17
   serveMaxForce: 30
   serveLift: 8

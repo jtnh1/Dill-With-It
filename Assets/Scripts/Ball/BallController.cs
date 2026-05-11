@@ -1,4 +1,6 @@
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 
 [RequireComponent(typeof(Rigidbody))]
@@ -15,17 +17,25 @@ public class BallController : MonoBehaviour
     public float netVelocityDamping = 0.15f;
     [Tooltip("Maximum upward velocity allowed after a net collision.")]
     public float netMaxUpwardVelocity = 0.5f;
+    [Tooltip("Prevents stacked court/OOB colliders from reporting the same physical bounce more than once.")]
+    public float minBounceReportInterval = 0.1f;
 
     private Rigidbody rb;
+    private SphereCollider ballCollider;
     private int lastHitByPlayer = 0;
     private ZoneID currentZone = ZoneID.OutOfBounds;
     private bool isLive = false;
+    private readonly HashSet<Collider> ignoredPlayerColliders = new HashSet<Collider>();
+    private readonly HashSet<CourtZone> overlappingZones = new HashSet<CourtZone>();
+    private float lastBounceReportTime = -999f;
+    private int lastBounceReportFrame = -1;
 
     public event Action<Vector3> ResetPositionApplied;
 
     private void Awake()
     {
         rb = GetComponent<Rigidbody>();
+        ballCollider = GetComponent<SphereCollider>();
         rb.linearDamping = drag;
         rb.isKinematic = true; // frozen in place until first ApplyForce call
 
@@ -33,7 +43,16 @@ public class BallController : MonoBehaviour
         pm.bounciness = bounciness;
         pm.bounceCombine = PhysicsMaterialCombine.Maximum;
         pm.frictionCombine = PhysicsMaterialCombine.Minimum;
-        GetComponent<SphereCollider>().material = pm;
+        ballCollider.material = pm;
+    }
+
+    private IEnumerator Start()
+    {
+        while (true)
+        {
+            RefreshIgnoredPlayerCollisions();
+            yield return new WaitForSeconds(0.5f);
+        }
     }
 
     // Called by SwingExecutor. First call wakes gravity; subsequent calls redirect the ball.
@@ -59,6 +78,8 @@ public class BallController : MonoBehaviour
 
         currentZone    = ZoneID.OutOfBounds;
         lastHitByPlayer = 0;
+        overlappingZones.Clear();
+        ResetBounceDebounce();
     }
 
     void MakeLive()
@@ -68,17 +89,24 @@ public class BallController : MonoBehaviour
     }
 
     public Vector3 GetVelocity() => rb.linearVelocity;
-    public void SetLastHitBy(int playerIndex) => lastHitByPlayer = playerIndex;
+    public void SetLastHitBy(int playerIndex)
+    {
+        lastHitByPlayer = playerIndex;
+        ResetBounceDebounce();
+    }
 
     private void OnCollisionEnter(Collision col)
     {
         if (!isLive) return;
-        if (col.gameObject.CompareTag("Court")){
-            PickleballRulesEngine.Instance?.OnBallBounced(currentZone, lastHitByPlayer);
-            Debug.Log("[OnCollisionEnter] called - Court collision detected");
+
+        if (col.gameObject.CompareTag("Court"))
+        {
+            ReportBounce(ResolveLandingZone(col), col.gameObject.tag);
         }
         else if (col.gameObject.CompareTag("Out Of Bounds"))
-            PickleballRulesEngine.Instance?.OnBallBounced(ZoneID.OutOfBounds, lastHitByPlayer);
+        {
+            ReportBounce(ResolveLandingZone(col), col.gameObject.tag);
+        }
         else if (col.gameObject.CompareTag("Net"))
         {
             DampenNetBounce();
@@ -94,15 +122,148 @@ public class BallController : MonoBehaviour
         rb.angularVelocity *= netVelocityDamping;
     }
 
+    ZoneID ResolveLandingZone(Collision collision)
+    {
+        Vector3 sample = transform.position;
+        if (collision != null && collision.contactCount > 0)
+            sample = collision.GetContact(0).point;
+
+        ZoneID zone = PickBestZone(Physics.OverlapSphere(sample, 0.3f, ~0, QueryTriggerInteraction.Collide));
+        if (zone != ZoneID.OutOfBounds)
+            return zone;
+
+        float radius = ballCollider != null ? ballCollider.radius + 0.1f : 0.35f;
+        zone = PickBestZone(Physics.OverlapSphere(transform.position, radius, ~0, QueryTriggerInteraction.Collide));
+        if (zone != ZoneID.OutOfBounds)
+            return zone;
+
+        currentZone = PickBestZone(overlappingZones);
+        return currentZone;
+    }
+
+    ZoneID PickBestZone(Collider[] overlaps)
+    {
+        ZoneID bestZone = ZoneID.OutOfBounds;
+        float bestVolume = float.PositiveInfinity;
+        bool sawOutOfBounds = false;
+
+        foreach (Collider overlap in overlaps)
+        {
+            CourtZone zone = overlap.GetComponent<CourtZone>();
+            if (zone == null) continue;
+
+            if (zone.zoneID == ZoneID.OutOfBounds)
+            {
+                sawOutOfBounds = true;
+                continue;
+            }
+
+            float volume = ZoneVolume(zone);
+            if (volume >= bestVolume) continue;
+
+            bestVolume = volume;
+            bestZone = zone.zoneID;
+        }
+
+        currentZone = bestZone != ZoneID.OutOfBounds || sawOutOfBounds ? bestZone : currentZone;
+        return currentZone;
+    }
+
+    ZoneID PickBestZone(HashSet<CourtZone> zones)
+    {
+        ZoneID bestZone = ZoneID.OutOfBounds;
+        float bestVolume = float.PositiveInfinity;
+        bool sawOutOfBounds = false;
+
+        foreach (CourtZone zone in zones)
+        {
+            if (zone == null) continue;
+
+            if (zone.zoneID == ZoneID.OutOfBounds)
+            {
+                sawOutOfBounds = true;
+                continue;
+            }
+
+            float volume = ZoneVolume(zone);
+            if (volume >= bestVolume) continue;
+
+            bestVolume = volume;
+            bestZone = zone.zoneID;
+        }
+
+        return bestZone != ZoneID.OutOfBounds || sawOutOfBounds ? bestZone : ZoneID.OutOfBounds;
+    }
+
+    float ZoneVolume(CourtZone zone)
+    {
+        Collider col = zone.GetComponent<Collider>();
+        if (col == null) return float.PositiveInfinity;
+        Vector3 size = col.bounds.size;
+        return size.x * size.y * size.z;
+    }
+
+    void ReportBounce(ZoneID zone, string sourceTag)
+    {
+        if (ShouldIgnoreDuplicateBounce(zone, sourceTag))
+            return;
+
+        lastBounceReportTime = Time.time;
+        lastBounceReportFrame = Time.frameCount;
+        PickleballRulesEngine.Instance?.OnBallBounced(zone, lastHitByPlayer);
+        Debug.Log($"[BallBounce] source={sourceTag} | zone={zone} | lastHit={lastHitByPlayer}");
+    }
+
+    bool ShouldIgnoreDuplicateBounce(ZoneID zone, string sourceTag)
+    {
+        bool sameFrame = Time.frameCount == lastBounceReportFrame;
+        bool tooSoon = Time.time - lastBounceReportTime < minBounceReportInterval;
+        if (!sameFrame && !tooSoon) return false;
+
+        Debug.Log($"[BallBounce] Ignored duplicate bounce | source={sourceTag} | zone={zone} | lastHit={lastHitByPlayer}");
+        return true;
+    }
+
+    void ResetBounceDebounce()
+    {
+        lastBounceReportTime = -999f;
+        lastBounceReportFrame = -1;
+    }
+
+    void RefreshIgnoredPlayerCollisions()
+    {
+        if (ballCollider == null) return;
+
+        foreach (PlayerController player in FindObjectsByType<PlayerController>(FindObjectsSortMode.None))
+            IgnorePlayerCollision(player.GetComponent<CharacterController>());
+
+        foreach (AIBot ai in FindObjectsByType<AIBot>(FindObjectsSortMode.None))
+            IgnorePlayerCollision(ai.GetComponent<CharacterController>());
+    }
+
+    void IgnorePlayerCollision(Collider playerCollider)
+    {
+        if (playerCollider == null || ignoredPlayerColliders.Contains(playerCollider)) return;
+
+        Physics.IgnoreCollision(ballCollider, playerCollider, true);
+        ignoredPlayerColliders.Add(playerCollider);
+    }
+
     private void OnTriggerEnter(Collider other)
     {
         CourtZone zone = other.GetComponent<CourtZone>();
-        if (zone != null) currentZone = zone.zoneID;
+        if (zone == null) return;
+
+        overlappingZones.Add(zone);
+        currentZone = PickBestZone(overlappingZones);
     }
 
     private void OnTriggerExit(Collider other)
     {
         CourtZone zone = other.GetComponent<CourtZone>();
-        if (zone != null && zone.zoneID == currentZone) currentZone = ZoneID.OutOfBounds;
+        if (zone == null) return;
+
+        overlappingZones.Remove(zone);
+        currentZone = PickBestZone(overlappingZones);
     }
 }

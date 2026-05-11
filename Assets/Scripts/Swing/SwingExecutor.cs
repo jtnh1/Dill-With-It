@@ -7,26 +7,32 @@ public class SwingExecutor : MonoBehaviour
     public float backhandForce = 16f;
     [Tooltip("Fixed upward component on forehand/backhand — gives arc without stealing forward velocity.")]
     public float hitLift = 9f;
+    public Vector2 forehandPowerRange = new Vector2(0.75f, 1.25f);
+    public Vector2 backhandPowerRange = new Vector2(0.7f, 1.2f);
 
     [Header("Dink")]
     public float dinkForce = 7f;
     [Tooltip("Upward component on dink — enough arc to clear the net from the kitchen line.")]
     public float dinkLift = 9f;
+    public Vector2 dinkPowerRange = new Vector2(0.6f, 1.05f);
 
     [Header("Lob")]
     public float lobForce = 5f;
     [Tooltip("Large upward component — ball goes very high and lands deep.")]
     public float lobUpward = 20f;
+    public Vector2 lobPowerRange = new Vector2(0.75f, 1.15f);
 
     [Header("Smash")]
     public float smashForce = 35f;
     [Tooltip("Tiny upward nudge so the smash clears the net; gravity does the rest.")]
     public float smashLift = 3f;
+    public Vector2 smashPowerRange = new Vector2(0.85f, 1.3f);
 
     [Header("Block")]
     public float blockForce = 15f;
     [Tooltip("Upward component added to block so the return clears the net.")]
     public float blockLift = 4f;
+    public Vector2 blockPowerRange = new Vector2(0.75f, 1.1f);
 
     [Header("Serve")]
     public float serveMinForce = 17f;
@@ -38,7 +44,7 @@ public class SwingExecutor : MonoBehaviour
 
     // aimDir: optional horizontal direction override (XZ plane, already normalised).
     // Pass Vector3.zero (default) to fall back to playerTransform.forward.
-    public void Execute(SwingType type, BallController ball, Transform playerTransform, float forceScale = 1f, Vector3 aimDir = default)
+    public void Execute(SwingType type, BallController ball, Transform playerTransform, float forceScale = 1f, Vector3 aimDir = default, float horizontalPowerScale = 1f)
     {
         if (type == SwingType.None || ball == null) return;
 
@@ -46,31 +52,37 @@ public class SwingExecutor : MonoBehaviour
             ? new Vector3(aimDir.x, 0f, aimDir.z).normalized
             : new Vector3(playerTransform.forward.x, 0f, playerTransform.forward.z).normalized;
 
-        Vector3 force = Vector3.zero;
+        Vector3 horizontal = Vector3.zero;
+        Vector3 vertical = Vector3.zero;
 
         switch (type)
         {
             case SwingType.Forehand:
-                force = fwd * forehandForce + Vector3.up * hitLift;
+                horizontal = fwd * forehandForce;
+                vertical = Vector3.up * hitLift;
                 break;
 
             case SwingType.Backhand:
-                force = fwd * backhandForce + Vector3.up * hitLift;
+                horizontal = fwd * backhandForce;
+                vertical = Vector3.up * hitLift;
                 break;
 
             case SwingType.Dink:
-                force = fwd * dinkForce + Vector3.up * dinkLift;
+                horizontal = fwd * dinkForce;
+                vertical = Vector3.up * dinkLift;
                 break;
 
             case SwingType.Lob:
                 // Slow forward, big upward — high arc that lands deep in opponent's court.
-                force = fwd * lobForce + Vector3.up * lobUpward;
+                horizontal = fwd * lobForce;
+                vertical = Vector3.up * lobUpward;
                 break;
 
             case SwingType.Smash:
                 // Minimal upward nudge ensures the smash clears the net; gravity brings it down.
                 stamina?.ConsumeSmash();
-                force = fwd * smashForce + Vector3.up * smashLift;
+                horizontal = fwd * smashForce;
+                vertical = Vector3.up * smashLift;
                 break;
 
             case SwingType.Block:
@@ -83,12 +95,30 @@ public class SwingExecutor : MonoBehaviour
                     : fwd;
 
                 Vector3 blockFlat = new Vector3(blockDir.x, 0f, blockDir.z).normalized;
-                force = blockFlat * blockForce + Vector3.up * blockLift;
+                horizontal = blockFlat * blockForce;
+                vertical = Vector3.up * blockLift;
                 break;
             }
         }
 
+        Vector3 force = horizontal * Mathf.Max(0f, horizontalPowerScale) + vertical;
         ball.ApplyForce(force * forceScale);
+    }
+
+    public float GetSwingPowerMultiplier(SwingType type, float normalizedPower)
+    {
+        Vector2 range = type switch
+        {
+            SwingType.Forehand => forehandPowerRange,
+            SwingType.Backhand => backhandPowerRange,
+            SwingType.Dink => dinkPowerRange,
+            SwingType.Lob => lobPowerRange,
+            SwingType.Smash => smashPowerRange,
+            SwingType.Block => blockPowerRange,
+            _ => Vector2.one
+        };
+
+        return Mathf.Lerp(range.x, range.y, Mathf.Clamp01(normalizedPower));
     }
 
     public void ExecuteServe(BallController ball, Transform playerTransform, float normalizedPower, Vector3 aimDir = default)

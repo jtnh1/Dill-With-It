@@ -71,7 +71,7 @@ MonoBehaviour:
   offlineSceneLoadDelay: 0
   transport: {fileID: -5648645353174476773}
   networkAddress: localhost
-  maxConnections: 2
+  maxConnections: 4
   disconnectInactiveConnections: 0
   disconnectInactiveTimeout: 60
   authenticator: {fileID: 0}
@@ -103,7 +103,10 @@ MonoBehaviour:
   GameplayScene: Assets/Scenes/GameScene.unity
   _allPlayersReady: 0
   clientIndex: 0
+  matchMode: 1
   playerASpawnPos: {x: 5, y: 0.1, z: -24.5}
   playerBSpawnPos: {x: -5, y: 0.1, z: 24.5}
+  playerAPartnerSpawnPos: {x: -5, y: 0.1, z: -24.5}
+  playerBPartnerSpawnPos: {x: 5, y: 0.1, z: 24.5}
   playerASpawnEuler: {x: 0, y: 0, z: 0}
   playerBSpawnEuler: {x: 0, y: 180, z: 0}

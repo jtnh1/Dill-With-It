@@ -6,15 +6,14 @@ public class AIBot : MonoBehaviour
 {
     public enum Difficulty { Easy, Medium, Hard }
 
-    // ── Internal phase (drives behaviour each Update) ─────────────────────────
     enum AIPhase
     {
-        Idle,          // PointScored / GameOver — stand still
-        ReadyToServe,  // PreServe, AI serves — walk to baseline then serve
-        Serving,       // Serve ball just launched — wait for it to bounce
-        Receiving,     // PreServe, player serves — move to ready position
-        WaitBounce,    // InRally after AI's serve — wait for return bounce
-        Rally,         // InRally, free to chase and swing
+        Idle,
+        ReadyToServe,
+        Serving,
+        Receiving,
+        WaitBounce,
+        Rally,
     }
 
     [Header("Settings")]
@@ -22,17 +21,28 @@ public class AIBot : MonoBehaviour
     public float walkSpeed = 5f;
     public float reactionDelay = 0.4f;
     public float swingCooldown = 0.6f;
+    [Tooltip("Used when this bot has not been explicitly assigned a PlayerIdentity.")]
+    public int fallbackPlayerId = 1;
 
     [Header("Positioning")]
     [Tooltip("Base court position when receiving or in a rally.")]
     public Vector3 basePosition = new Vector3(0f, 0f, 18f);
+    [Tooltip("Clamp AI movement to its half of the court.")]
+    public Vector2 courtXBounds = new Vector2(-9.25f, 9.25f);
+    public Vector2 courtZBounds = new Vector2(1.25f, 28.25f);
+    [Tooltip("AI stands this far behind the predicted contact point so the ball arrives in front of it.")]
+    public float contactStandoff = 1.1f;
+
+    [Header("Prediction")]
+    public float predictionMaxTime = 2.75f;
+    public float predictionStep = 0.05f;
+    public float predictionMinHitHeight = 0.55f;
+    public float predictionMaxHitHeight = 2.25f;
+    public float fallbackLookAheadTime = 0.35f;
 
     [Header("Serve")]
-    [Tooltip("Z and Y for the AI's serve stand position. X is computed from score (matches PickleballRulesEngine.serveXOffset).")]
     public Vector3 serveStandPosition = new Vector3(0f, 0f, 23f);
-    [Tooltip("X distance from centre to the serve lane. Keep in sync with PickleballRulesEngine.serveXOffset.")]
     public float serveXOffset = 5f;
-    [Tooltip("Pause before hitting the serve.")]
     public float serveWindupDelay = 1.0f;
 
     [Header("References")]
@@ -41,10 +51,10 @@ public class AIBot : MonoBehaviour
     public Animator animator;
     public PaddleAttacher paddleAttacher;
 
-    // ── Private ───────────────────────────────────────────────────────────────
     private BallController ball;
     private PaddleHitZone hitZone;
     private CharacterController characterController;
+    private PlayerIdentity identity;
     private Vector3 targetPos;
     private float reactionTimer;
     private float swingCooldownTimer;
@@ -54,31 +64,48 @@ public class AIBot : MonoBehaviour
     private static readonly int HashSwing        = Animator.StringToHash("SwingType");
     private static readonly int HashSwingTrigger = Animator.StringToHash("Swing");
 
-    // ── Unity lifecycle ───────────────────────────────────────────────────────
+    static readonly float[,] ZoneATargets =
+    {
+        { -8f,    8f,  -6f,  -1f },
+        {  0.5f,  9.5f, -21f, -8f },
+        { -9.5f, -0.5f, -21f, -8f },
+        {  0.5f,  9.5f, -26f, -23f },
+        { -9.5f, -0.5f, -26f, -23f },
+    };
+
+    static readonly float[,] ZoneBTargets =
+    {
+        { -8f,    8f,   1f,   6f },
+        { -9.5f, -0.5f,  8f,  21f },
+        {  0.5f,  9.5f,  8f,  21f },
+        { -9.5f, -0.5f, 23f,  26f },
+        {  0.5f,  9.5f, 23f,  26f },
+    };
+
+    int PlayerId => identity != null && identity.IsAssigned ? identity.PlayerId : fallbackPlayerId;
+    int TeamId => PlayerIdentity.TeamOfPlayer(PlayerId);
+    int TeamSlot => PlayerIdentity.SlotOfPlayer(PlayerId);
 
     private void Awake()
     {
-        ball              = FindAnyObjectByType<BallController>();
+        ball = FindAnyObjectByType<BallController>();
         characterController = GetComponent<CharacterController>();
         if (paddleAttacher == null) paddleAttacher = GetComponent<PaddleAttacher>();
-
-        reactionDelay = difficulty switch
-        {
-            Difficulty.Easy   => 0.7f,
-            Difficulty.Medium => 0.4f,
-            Difficulty.Hard   => 0.1f,
-            _                 => 0.4f
-        };
+        EnsureIdentity();
+        ApplySideDefaults();
+        ApplyDifficultyDefaults();
     }
 
     private void Start()
     {
-        // No AI in multiplayer — both slots are human players.
         if (NetworkClient.active || NetworkServer.active)
         {
             gameObject.SetActive(false);
             return;
         }
+
+        BootstrapLocalDoublesIfNeeded();
+        ApplySideDefaults();
 
         if (GameStateManager.Instance != null)
             GameStateManager.Instance.OnStateChanged += OnStateChanged;
@@ -91,7 +118,7 @@ public class AIBot : MonoBehaviour
 
     private IEnumerator LateStart()
     {
-        yield return null; // wait one frame so PaddleAttacher.Start() has run
+        yield return null;
 
         if (paddleAttacher != null)
         {
@@ -99,7 +126,6 @@ public class AIBot : MonoBehaviour
             if (paddle != null) hitZone = paddle.GetComponentInChildren<PaddleHitZone>();
         }
 
-        // Bootstrap phase from whatever state the game is already in
         InitPhase();
     }
 
@@ -112,28 +138,109 @@ public class AIBot : MonoBehaviour
             PickleballRulesEngine.Instance.OnHit -= OnAnyBallHit;
     }
 
-    // ── Hit reaction ──────────────────────────────────────────────────────────
-
-    // Called the moment the human player makes paddle contact.
-    // Starts AI movement immediately rather than waiting for the bounce.
-    // Swing permission is still controlled by the state machine (WaitBounce never calls TrySwing).
-    void OnAnyBallHit(int playerIndex)
+    public void ConfigureIdentity(int playerId)
     {
-        if (playerIndex != 0) return; // only react to human player hits
-
-        reactionTimer = 0f; // snap target on next Update — no delay on first sample
-
-        // Serving: AI just served and is standing still waiting; start tracking now.
-        // Receiving: player is serving; AI was drifting to base position; track instead.
-        if (phase == AIPhase.Serving || phase == AIPhase.Receiving)
-            phase = AIPhase.WaitBounce;
+        fallbackPlayerId = playerId;
+        EnsureIdentity().Apply(playerId, PlayerIdentity.TeamOfPlayer(playerId), PlayerIdentity.SlotOfPlayer(playerId));
+        ApplySideDefaults();
     }
 
-    // ── State machine ─────────────────────────────────────────────────────────
+    void BootstrapLocalDoublesIfNeeded()
+    {
+        PickleballRulesEngine rules = PickleballRulesEngine.Instance;
+        if (rules == null || rules.ActiveMatchMode != MatchMode.Doubles)
+            return;
+
+        EnsureHumanIdentity();
+
+        if (!HasBotForPlayer(1))
+            ConfigureIdentity(1);
+
+        EnsureBotForPlayer(2);
+        EnsureBotForPlayer(3);
+        ResetLocalParticipantsToServePositions();
+    }
+
+    void EnsureHumanIdentity()
+    {
+        foreach (PlayerController player in FindObjectsByType<PlayerController>(FindObjectsSortMode.None))
+        {
+            if (player.GetComponent<AIBot>() != null) continue;
+            PlayerIdentity playerIdentity = EnsureIdentity(player.gameObject);
+            if (!playerIdentity.IsAssigned)
+                playerIdentity.Apply(0, 0, 0);
+            return;
+        }
+    }
+
+    bool HasBotForPlayer(int playerId)
+    {
+        foreach (AIBot bot in FindObjectsByType<AIBot>(FindObjectsSortMode.None))
+        {
+            PlayerIdentity botIdentity = bot.EnsureIdentity();
+            if (botIdentity.IsAssigned && botIdentity.PlayerId == playerId)
+                return true;
+        }
+
+        return false;
+    }
+
+    void EnsureBotForPlayer(int playerId)
+    {
+        if (HasBotForPlayer(playerId)) return;
+
+        AIBot bot = playerId == PlayerId ? this : Instantiate(this, transform.parent);
+        bot.name = $"AIBot_P{playerId + 1}";
+        bot.ConfigureIdentity(playerId);
+    }
+
+    void ResetLocalParticipantsToServePositions()
+    {
+        PickleballRulesEngine rules = PickleballRulesEngine.Instance;
+        if (rules == null) return;
+
+        foreach (PlayerController player in FindObjectsByType<PlayerController>(FindObjectsSortMode.None))
+        {
+            if (player.GetComponent<AIBot>() != null) continue;
+            PlayerIdentity playerIdentity = EnsureIdentity(player.gameObject);
+            int playerId = playerIdentity.IsAssigned ? playerIdentity.PlayerId : 0;
+            player.ResetForServePosition(
+                rules.GetServeZonePositionForPlayer(playerId),
+                rules.GetServeRotationForPlayer(playerId),
+                true);
+        }
+
+        foreach (AIBot bot in FindObjectsByType<AIBot>(FindObjectsSortMode.None))
+        {
+            int playerId = bot.PlayerId;
+            bot.ResetForServePosition(
+                rules.GetServeZonePositionForPlayer(playerId),
+                rules.GetServeRotationForPlayer(playerId));
+        }
+    }
+
+    void OnAnyBallHit(int playerIndex)
+    {
+        if (PlayerIdentity.TeamOfPlayer(playerIndex) == TeamId) return;
+
+        reactionTimer = 0f;
+        if (phase == AIPhase.Serving || phase == AIPhase.Receiving)
+        {
+            phase = AIPhase.WaitBounce;
+            targetPos = PredictBounceTarget();
+        }
+        else
+        {
+            targetPos = PredictReactionTarget();
+        }
+    }
 
     void OnStateChanged(GameState from, GameState to)
     {
-        bool aiServes = PickleballRulesEngine.Instance?.ServingPlayer == 1;
+        PickleballRulesEngine rules = PickleballRulesEngine.Instance;
+        bool aiServes = rules != null && rules.ServingPlayer == PlayerId;
+        bool myTeamServes = rules != null && rules.ServingTeam == TeamId;
+
         switch (to)
         {
             case GameState.PreServe:
@@ -141,15 +248,11 @@ public class AIBot : MonoBehaviour
                 break;
 
             case GameState.FirstBounce:
-                // Ball had first bounce. If AI served → ball on player's side, wait for return.
-                // If player served → ball on AI's side, AI must return it.
-                phase = aiServes ? AIPhase.WaitBounce : AIPhase.Rally;
+                phase = myTeamServes ? AIPhase.WaitBounce : AIPhase.Rally;
                 break;
 
             case GameState.SecondBounce:
-                // Ball had second bounce. If AI served → ball on AI's side, AI must hit to rally.
-                // If player served → ball on player's side, they must return; AI waits.
-                if (aiServes) phase = AIPhase.Rally;
+                phase = myTeamServes ? AIPhase.Rally : AIPhase.WaitBounce;
                 break;
 
             case GameState.Rally:
@@ -164,23 +267,22 @@ public class AIBot : MonoBehaviour
         }
     }
 
-    // Decide phase based on the current game state (used at start-up and on PreServe).
     void InitPhase()
     {
         StopAllCoroutines();
 
-        bool aiServes = PickleballRulesEngine.Instance?.ServingPlayer == 1;
+        PickleballRulesEngine rules = PickleballRulesEngine.Instance;
+        bool aiServes = rules != null && rules.ServingPlayer == PlayerId;
         if (aiServes)
         {
-            phase     = AIPhase.ReadyToServe;
+            phase = AIPhase.ReadyToServe;
             targetPos = CurrentServePosition();
             StartCoroutine(ServeRoutine());
+            return;
         }
-        else
-        {
-            phase     = AIPhase.Receiving;
-            targetPos = CurrentServeZonePosition();
-        }
+
+        phase = AIPhase.Receiving;
+        targetPos = CurrentServeZonePosition();
     }
 
     public void ResetForServePosition(Vector3 position, Quaternion rotation)
@@ -199,94 +301,40 @@ public class AIBot : MonoBehaviour
         SetMoveAnim(0f);
     }
 
-    // Returns the serve position for the current score (Player B faces −Z: even = right = −X).
     Vector3 CurrentServePosition()
     {
         PickleballRulesEngine rules = PickleballRulesEngine.Instance;
-        if (rules != null)
-            return rules.GetServeZonePositionForPlayer(1);
-
-        int score = PickleballRulesEngine.Instance?.playerBScore ?? 0;
-        float x = (score % 2 == 0) ? -serveXOffset : serveXOffset;
-        return new Vector3(x, serveStandPosition.y, serveStandPosition.z);
+        return rules != null ? rules.GetServeZonePositionForPlayer(PlayerId) : HomePosition();
     }
 
     Vector3 CurrentServeZonePosition()
     {
         PickleballRulesEngine rules = PickleballRulesEngine.Instance;
-        return rules != null ? rules.GetServeZonePositionForPlayer(1) : CurrentServePosition();
+        return rules != null ? rules.GetServeZonePositionForPlayer(PlayerId) : HomePosition();
     }
-
-    // ── Zone targeting ────────────────────────────────────────────────────────
-
-    // Zone_A landing rectangles (xMin, xMax, zMin, zMax) with 1-unit margin from edges.
-    // Index 0 = Kitchen, 1 = Right, 2 = Left, 3 = Serve_Right (deep), 4 = Serve_Left (deep).
-    static readonly float[,] ZoneATargets =
-    {
-        { -8f,   8f,  -6f,  -1f  },   // Kitchen
-        {  0.5f, 9.5f, -21f, -8f  },  // Right
-        { -9.5f,-0.5f, -21f, -8f  },  // Left
-        {  0.5f, 9.5f, -26f, -23f },  // Serve_Right (deep)
-        { -9.5f,-0.5f, -26f, -23f },  // Serve_Left  (deep)
-    };
-
-    // Random point inside the diagonal service box the rules engine expects for this score.
-    Vector3 PickServeTargetPos(bool evenScore)
-    {
-        // Even B score → Zone_A_Right (x: 0.5–9.5, z: -8 to -21)
-        // Odd  B score → Zone_A_Left  (x: -9.5–-0.5, z: -8 to -21)
-        float xMin = evenScore ?  0.5f : -9.5f;
-        float xMax = evenScore ?  9.5f : -0.5f;
-        return new Vector3(Random.Range(xMin, xMax), 0f, Random.Range(-8f, -29f));
-    }
-
-    // Random landing spot in one of Player A's zones.
-    Vector3 PickRallyTargetPos()
-    {
-        int i = Random.Range(0, ZoneATargets.GetLength(0));
-        return new Vector3(
-            Random.Range(ZoneATargets[i, 0], ZoneATargets[i, 1]),
-            0f,
-            Random.Range(ZoneATargets[i, 2], ZoneATargets[i, 3]));
-    }
-
-    // Horizontal direction (XZ plane, normalised) from current position toward a landing spot.
-    Vector3 AimDirTo(Vector3 landingPos)
-    {
-        Vector3 d = landingPos - transform.position;
-        d.y = 0f;
-        return d.sqrMagnitude > 0.01f ? d.normalized : -transform.forward;
-    }
-
-    // ── Serve coroutine ───────────────────────────────────────────────────────
 
     IEnumerator ServeRoutine()
     {
-        // Walk to the correct serve lane for this score
         Vector3 servePos = CurrentServePosition();
         targetPos = servePos;
 
         float timeout = 5f;
         while (timeout > 0f)
         {
-            float flat = new Vector2(transform.position.x - servePos.x,
-                                     transform.position.z - servePos.z).magnitude;
+            float flat = new Vector2(transform.position.x - servePos.x, transform.position.z - servePos.z).magnitude;
             if (flat < 0.7f) break;
             timeout -= Time.deltaTime;
             yield return null;
         }
 
-        // Windup pause (simulate holding the ball)
         yield return new WaitForSeconds(serveWindupDelay);
 
-        if (phase != AIPhase.ReadyToServe || ball == null) yield break;
+        PickleballRulesEngine rules = PickleballRulesEngine.Instance;
+        if (phase != AIPhase.ReadyToServe || ball == null || rules == null || rules.ServingPlayer != PlayerId)
+            yield break;
 
-        bool evenScore = (PickleballRulesEngine.Instance?.playerBScore ?? 0) % 2 == 0;
-
-        // Pick a random landing spot in the correct diagonal service box,
-        // then compute velocity direction from the current stand position toward it.
-        Vector3 landingSpot  = PickServeTargetPos(evenScore);
-        Vector3 dir          = AimDirTo(landingSpot);
+        Vector3 landingSpot = PickServeTargetPos(GetTeamScore() % 2 == 0);
+        Vector3 dir = AimDirTo(landingSpot);
         float servePower = Random.Range(0.65f, 1f);
 
         if (animator != null)
@@ -296,13 +344,11 @@ public class AIBot : MonoBehaviour
         }
 
         swingExecutor.ExecuteServe(ball, transform, servePower, dir);
-        ball.SetLastHitBy(1);
-        PickleballRulesEngine.Instance?.OnBallHit(1);
+        ball.SetLastHitBy(PlayerId);
+        PickleballRulesEngine.Instance?.OnBallHit(PlayerId, transform.position);
 
         phase = AIPhase.Serving;
     }
-
-    // ── Update ────────────────────────────────────────────────────────────────
 
     private void Update()
     {
@@ -326,49 +372,166 @@ public class AIBot : MonoBehaviour
                 break;
 
             case AIPhase.Serving:
-                // Just launched — idle briefly while ball travels to opponent
                 ApplyGravity();
                 SetMoveAnim(0f);
                 FaceToward(ball.transform.position);
                 break;
 
             case AIPhase.Receiving:
-                // Move to base and wait for the serve to bounce on our side
                 MoveToTarget();
                 FaceToward(ball.transform.position);
                 break;
 
             case AIPhase.WaitBounce:
-                // AI served; track the ball's landing spot but don't swing
-                UpdateReactionTarget();
+                UpdateReactionTarget(true);
                 MoveToTarget();
                 FaceToward(ball.transform.position);
                 break;
 
             case AIPhase.Rally:
-                UpdateReactionTarget();
+                UpdateReactionTarget(false);
                 MoveToTarget();
                 TrySwing();
                 break;
         }
     }
 
-    // ── Movement helpers ──────────────────────────────────────────────────────
-
-    void UpdateReactionTarget()
+    void UpdateReactionTarget(bool requireBounceTarget)
     {
         reactionTimer -= Time.deltaTime;
         if (reactionTimer <= 0f)
         {
-            Vector3 vel = ball.GetVelocity();
-            targetPos     = ball.transform.position + vel * 0.5f;
+            targetPos = requireBounceTarget ? PredictBounceTarget() : PredictReactionTarget();
             reactionTimer = reactionDelay;
         }
     }
 
+    Vector3 PredictReactionTarget()
+    {
+        Vector3 ballPos = ball.transform.position;
+        Vector3 velocity = ball.GetVelocity();
+
+        if (velocity.sqrMagnitude < 0.25f)
+            return ClampCourtPosition(basePosition);
+
+        if (TryPredictHittablePoint(ballPos, velocity, out Vector3 predicted) && IsResponsibleForPoint(predicted))
+            return ClampCourtPosition(StandPositionForContact(predicted));
+
+        Vector3 fallback = ballPos + velocity * fallbackLookAheadTime;
+        fallback.y = 0f;
+        return IsResponsibleForPoint(fallback)
+            ? ClampCourtPosition(StandPositionForContact(fallback))
+            : ClampCourtPosition(basePosition);
+    }
+
+    Vector3 PredictBounceTarget()
+    {
+        Vector3 ballPos = ball.transform.position;
+        Vector3 velocity = ball.GetVelocity();
+
+        if (velocity.sqrMagnitude < 0.25f)
+            return ClampCourtPosition(basePosition);
+
+        if (TryPredictBouncePoint(ballPos, velocity, out Vector3 predicted) && IsResponsibleForPoint(predicted))
+            return ClampCourtPosition(StandPositionForContact(predicted));
+
+        Vector3 fallback = ballPos + velocity * fallbackLookAheadTime;
+        fallback.y = 0f;
+        return IsResponsibleForPoint(fallback)
+            ? ClampCourtPosition(StandPositionForContact(fallback))
+            : ClampCourtPosition(basePosition);
+    }
+
+    bool TryPredictHittablePoint(Vector3 start, Vector3 velocity, out Vector3 point)
+    {
+        Vector3 gravity = Physics.gravity;
+        Vector3 previous = start;
+        bool hasEnteredAISide = IsPointOnAISide(previous);
+
+        for (float t = predictionStep; t <= predictionMaxTime; t += predictionStep)
+        {
+            Vector3 sample = start + velocity * t + 0.5f * gravity * t * t;
+            if (IsPointOnAISide(sample)) hasEnteredAISide = true;
+
+            if (hasEnteredAISide && IsPointOnAISide(sample) && IsHittablePredictionHeight(sample.y))
+            {
+                point = sample;
+                point.y = 0f;
+                return true;
+            }
+
+            if (hasEnteredAISide && previous.y > 0f && sample.y <= 0f)
+            {
+                float segmentT = Mathf.InverseLerp(previous.y, sample.y, 0f);
+                point = Vector3.Lerp(previous, sample, segmentT);
+                point.y = 0f;
+                return true;
+            }
+
+            previous = sample;
+        }
+
+        point = default;
+        return false;
+    }
+
+    bool TryPredictBouncePoint(Vector3 start, Vector3 velocity, out Vector3 point)
+    {
+        Vector3 gravity = Physics.gravity;
+        Vector3 previous = start;
+        bool hasEnteredAISide = IsPointOnAISide(previous);
+
+        for (float t = predictionStep; t <= predictionMaxTime; t += predictionStep)
+        {
+            Vector3 sample = start + velocity * t + 0.5f * gravity * t * t;
+            if (IsPointOnAISide(sample)) hasEnteredAISide = true;
+
+            if (hasEnteredAISide && previous.y > 0f && sample.y <= 0f)
+            {
+                float segmentT = Mathf.InverseLerp(previous.y, sample.y, 0f);
+                point = Vector3.Lerp(previous, sample, segmentT);
+                point.y = 0f;
+                return IsPointOnAISide(point);
+            }
+
+            previous = sample;
+        }
+
+        point = default;
+        return false;
+    }
+
+    bool IsPointOnAISide(Vector3 point)
+    {
+        return point.z >= courtZBounds.x && point.z <= courtZBounds.y
+            && point.x >= courtXBounds.x && point.x <= courtXBounds.y;
+    }
+
+    bool IsHittablePredictionHeight(float y)
+    {
+        return y >= predictionMinHitHeight && y <= predictionMaxHitHeight;
+    }
+
+    Vector3 StandPositionForContact(Vector3 contactPoint)
+    {
+        Vector3 stand = contactPoint;
+        stand.z += TeamId == 0 ? -contactStandoff : contactStandoff;
+        stand.y = 0f;
+        return stand;
+    }
+
+    Vector3 ClampCourtPosition(Vector3 position)
+    {
+        position.x = Mathf.Clamp(position.x, courtXBounds.x, courtXBounds.y);
+        position.z = Mathf.Clamp(position.z, courtZBounds.x, courtZBounds.y);
+        position.y = 0f;
+        return position;
+    }
+
     void MoveToTarget()
     {
-        Vector3 dir = targetPos - transform.position;
+        Vector3 clampedTarget = ClampCourtPosition(targetPos);
+        Vector3 dir = clampedTarget - transform.position;
         dir.y = 0f;
         float dist = dir.magnitude;
 
@@ -387,17 +550,18 @@ public class AIBot : MonoBehaviour
         }
     }
 
-    void ApplyGravity() =>
-        characterController.Move(new Vector3(0f, Physics.gravity.y * Time.deltaTime, 0f));
+    void ApplyGravity()
+    {
+        if (characterController != null)
+            characterController.Move(new Vector3(0f, Physics.gravity.y * Time.deltaTime, 0f));
+    }
 
     void FaceToward(Vector3 point)
     {
         Vector3 dir = point - transform.position;
         dir.y = 0f;
         if (dir.sqrMagnitude > 0.01f)
-            transform.rotation = Quaternion.Slerp(transform.rotation,
-                                                   Quaternion.LookRotation(dir),
-                                                   8f * Time.deltaTime);
+            transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.LookRotation(dir), 8f * Time.deltaTime);
     }
 
     void SetMoveAnim(float value) => animator?.SetFloat(HashMoveZ, value);
@@ -407,7 +571,7 @@ public class AIBot : MonoBehaviour
         PickleballRulesEngine rules = PickleballRulesEngine.Instance;
         if (rules == null || !rules.IsServeSetupActive) return;
 
-        Vector3 clamped = rules.ClampPositionToServeZone(1, transform.position);
+        Vector3 clamped = rules.ClampPositionToServeZone(PlayerId, transform.position);
         if ((clamped - transform.position).sqrMagnitude < 0.0001f) return;
 
         bool controllerWasEnabled = characterController != null && characterController.enabled;
@@ -416,9 +580,12 @@ public class AIBot : MonoBehaviour
         if (characterController != null) characterController.enabled = controllerWasEnabled;
     }
 
-    // ── Swing ─────────────────────────────────────────────────────────────────
-
-    bool IsInKitchen() => transform.position.z >= 0f && transform.position.z <= 7f;
+    bool IsInKitchen()
+    {
+        return TeamId == 0
+            ? transform.position.z >= -7f && transform.position.z <= 0f
+            : transform.position.z >= 0f && transform.position.z <= 7f;
+    }
 
     void TrySwing()
     {
@@ -426,20 +593,34 @@ public class AIBot : MonoBehaviour
 
         GameState state = GameStateManager.Instance?.CurrentState ?? GameState.PreServe;
         if (state == GameState.ResultOfRound || state == GameState.GameOver) return;
-
-        if (IsInKitchen()) return;
+        if (!IsResponsibleForPoint(ball.transform.position)) return;
 
         float dist = Vector3.Distance(transform.position, ball.transform.position);
         if (dist > 2.5f) return;
 
-        SwingType type = ball.transform.position.y >= 1.8f && stamina.HasEnoughForSmash()
+        bool inKitchen = IsInKitchen();
+        PickleballRulesEngine rules = PickleballRulesEngine.Instance;
+        if (inKitchen && (rules == null || !rules.HasBallBouncedOnPlayerSideSinceOpponentHit(PlayerId)))
+            return;
+
+        SwingType type = inKitchen
+            ? SwingType.Dink
+            : ball.transform.position.y >= 1.8f && stamina.HasEnoughForSmash()
             ? SwingType.Smash
             : SwingType.Forehand;
 
         float forceScale = Mathf.Lerp(0.75f, 1f, Mathf.InverseLerp(2.5f, 0.75f, dist));
-
-        // Pick a random landing zone in Player A's court and compute aim direction.
         Vector3 aimDir = AimDirTo(PickRallyTargetPos());
+        float chargedPower = difficulty switch
+        {
+            Difficulty.Easy => Random.Range(0.2f, 0.8f),
+            Difficulty.Medium => Random.Range(0.35f, 0.95f),
+            Difficulty.Hard => Random.Range(0.5f, 1f),
+            _ => Random.Range(0.35f, 0.95f)
+        };
+        float horizontalPowerScale = swingExecutor != null
+            ? swingExecutor.GetSwingPowerMultiplier(type, chargedPower)
+            : 1f;
 
         swingCooldownTimer = swingCooldown;
 
@@ -451,12 +632,114 @@ public class AIBot : MonoBehaviour
 
         VFXManager.Instance?.PlaySwingBurst(ball.transform.position);
         SoundManager.Instance?.PlaySwingSound();
-        swingExecutor.Execute(type, ball, transform, forceScale, aimDir);
-        ball.SetLastHitBy(1);
-        PickleballRulesEngine.Instance?.OnBallHit(1);
+        swingExecutor.Execute(type, ball, transform, forceScale, aimDir, horizontalPowerScale);
+        ball.SetLastHitBy(PlayerId);
+        PickleballRulesEngine.Instance?.OnBallHit(PlayerId, transform.position);
     }
 
-    // ── Gizmos ────────────────────────────────────────────────────────────────
+    Vector3 PickServeTargetPos(bool evenScore)
+    {
+        if (TeamId == 0)
+        {
+            float xMin = evenScore ? -9.5f : 0.5f;
+            float xMax = evenScore ? -0.5f : 9.5f;
+            return new Vector3(Random.Range(xMin, xMax), 0f, Random.Range(8f, 21f));
+        }
+
+        float aXMin = evenScore ? 0.5f : -9.5f;
+        float aXMax = evenScore ? 9.5f : -0.5f;
+        return new Vector3(Random.Range(aXMin, aXMax), 0f, Random.Range(-21f, -8f));
+    }
+
+    Vector3 PickRallyTargetPos()
+    {
+        float[,] targets = TeamId == 0 ? ZoneBTargets : ZoneATargets;
+        int i = Random.Range(0, targets.GetLength(0));
+        return new Vector3(
+            Random.Range(targets[i, 0], targets[i, 1]),
+            0f,
+            Random.Range(targets[i, 2], targets[i, 3]));
+    }
+
+    Vector3 AimDirTo(Vector3 landingPos)
+    {
+        Vector3 d = landingPos - transform.position;
+        d.y = 0f;
+        return d.sqrMagnitude > 0.01f ? d.normalized : transform.forward;
+    }
+
+    bool IsResponsibleForPoint(Vector3 point)
+    {
+        PickleballRulesEngine rules = PickleballRulesEngine.Instance;
+        if (rules == null || rules.ActiveMatchMode != MatchMode.Doubles)
+            return true;
+
+        if (!IsPointOnAISide(point))
+            return false;
+
+        if (TeamId == 0)
+            return TeamSlot == 0 ? point.x >= 0f : point.x < 0f;
+
+        return TeamSlot == 0 ? point.x <= 0f : point.x > 0f;
+    }
+
+    void ApplyDifficultyDefaults()
+    {
+        switch (difficulty)
+        {
+            case Difficulty.Easy:
+                reactionDelay = Mathf.Min(reactionDelay, 0.35f);
+                predictionMaxTime = Mathf.Max(predictionMaxTime, 2.2f);
+                break;
+            case Difficulty.Medium:
+                reactionDelay = Mathf.Min(reactionDelay, 0.18f);
+                predictionMaxTime = Mathf.Max(predictionMaxTime, 2.5f);
+                break;
+            case Difficulty.Hard:
+                reactionDelay = Mathf.Min(reactionDelay, 0.05f);
+                predictionMaxTime = Mathf.Max(predictionMaxTime, 3f);
+                break;
+        }
+    }
+
+    void ApplySideDefaults()
+    {
+        float laneX = HomeLaneX();
+        float sideZ = TeamId == 0 ? -18f : 18f;
+        basePosition = new Vector3(laneX, 0f, sideZ);
+        serveStandPosition = new Vector3(laneX, 0f, TeamId == 0 ? -23f : 23f);
+        courtXBounds = new Vector2(-9.25f, 9.25f);
+        courtZBounds = TeamId == 0 ? new Vector2(-28.25f, -1.25f) : new Vector2(1.25f, 28.25f);
+    }
+
+    Vector3 HomePosition() => ClampCourtPosition(basePosition);
+
+    float HomeLaneX()
+    {
+        if (TeamId == 0)
+            return TeamSlot == 0 ? 4.5f : -4.5f;
+
+        return TeamSlot == 0 ? -4.5f : 4.5f;
+    }
+
+    int GetTeamScore()
+    {
+        PickleballRulesEngine rules = PickleballRulesEngine.Instance;
+        if (rules == null) return 0;
+        return TeamId == 0 ? rules.playerAScore : rules.playerBScore;
+    }
+
+    PlayerIdentity EnsureIdentity()
+    {
+        return identity = EnsureIdentity(gameObject);
+    }
+
+    static PlayerIdentity EnsureIdentity(GameObject target)
+    {
+        if (!target.TryGetComponent(out PlayerIdentity targetIdentity))
+            targetIdentity = target.AddComponent<PlayerIdentity>();
+        return targetIdentity;
+    }
 
     private void OnDrawGizmosSelected()
     {

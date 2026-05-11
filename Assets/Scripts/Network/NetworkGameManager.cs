@@ -35,29 +35,50 @@ public class NetworkGameManager : NetworkBehaviour
 
         NetworkLobbyManager.Instance?.ResetGamePlayersForRestart();
         PickleballRulesEngine.Instance?.ResetMatch();
-        RpcPrepareRestartUi(0, 0, 0);
+        PickleballRulesEngine rules = PickleballRulesEngine.Instance;
+        RpcPrepareRestartUi(
+            rules != null ? rules.playerAScore : 0,
+            rules != null ? rules.playerBScore : 0,
+            rules != null ? rules.ServingPlayer : 0,
+            rules != null ? rules.ServingTeam : 0,
+            rules != null ? rules.CurrentReceiverPlayer : 1,
+            rules != null ? rules.ServerNumber : 1);
     }
 
     [ClientRpc]
-    void RpcPrepareRestartUi(int scoreA, int scoreB, int serving)
+    void RpcPrepareRestartUi(int scoreA, int scoreB, int serving, int servingTeam, int receiver, int serverNumber)
     {
         if (!isServer)
-            PickleballRulesEngine.Instance?.ApplyRemoteScore(scoreA, scoreB, serving);
+            PickleballRulesEngine.Instance?.ApplyRemoteScore(scoreA, scoreB, serving, servingTeam, receiver, serverNumber);
         UIManager.Instance?.ShowGameplayForRestart(scoreA, scoreB, serving);
     }
 
     // Called by PickleballRulesEngine on server when a point is awarded.
     [Server]
-    public void BroadcastScore(int scoreA, int scoreB, int serving, string announcement)
+    public void BroadcastScore(
+        int scoreA,
+        int scoreB,
+        int serving,
+        int servingTeam,
+        int receiver,
+        int serverNumber,
+        string announcement)
     {
-        RpcSyncScore(scoreA, scoreB, serving, announcement);
+        RpcSyncScore(scoreA, scoreB, serving, servingTeam, receiver, serverNumber, announcement);
     }
 
     [ClientRpc]
-    void RpcSyncScore(int scoreA, int scoreB, int serving, string announcement)
+    void RpcSyncScore(
+        int scoreA,
+        int scoreB,
+        int serving,
+        int servingTeam,
+        int receiver,
+        int serverNumber,
+        string announcement)
     {
         if (isServer) return;
-        PickleballRulesEngine.Instance?.ApplyRemoteScore(scoreA, scoreB, serving);
+        PickleballRulesEngine.Instance?.ApplyRemoteScore(scoreA, scoreB, serving, servingTeam, receiver, serverNumber);
         UIManager.Instance?.UpdateScoreBoard(scoreA, scoreB, serving);
         if (!string.IsNullOrEmpty(announcement))
             UIManager.Instance?.ShowAnnouncement(announcement);
