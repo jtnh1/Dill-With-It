@@ -109,6 +109,21 @@ public class NetworkLobbyManager : NetworkRoomManager
         ServerChangeScene(GameplayScene);
     }
 
+    // Cleanly back out of an active lobby for either host or client. Tears down the
+    // Mirror connection and releases the Steam lobby so a friend's invite list updates.
+    public void LeaveLobby()
+    {
+        if (NetworkServer.active && NetworkClient.isConnected)      StopHost();
+        else if (NetworkClient.isConnected || NetworkClient.active) StopClient();
+        else if (NetworkServer.active)                              StopServer();
+
+        if (SteamManager.Initialized && _currentLobby.IsValid())
+            SteamMatchmaking.LeaveLobby(_currentLobby);
+
+        _currentLobby = CSteamID.Nil;
+        _joiningLobby = false;
+    }
+
     [Server]
     public void ResetGamePlayersForRestart()
     {

@@ -11,8 +11,11 @@ public class InputManager : ScriptableObject
 
     public void Initialize()
     {
-        actions = new PickleballInputActions();
-        LoadOverrides();
+        if (actions == null)
+        {
+            actions = new PickleballInputActions();
+            LoadOverrides();
+        }
         actions.Enable();
     }
 

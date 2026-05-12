@@ -33,6 +33,34 @@ public class UIManager : MonoBehaviour
     [Header("Pause")]
     public Button resumeButton;
     public Button pauseQuitButton;
+    public Button pauseOptionsButton;
+
+    [Header("Options")]
+    public GameObject optionsPanel;
+    [Tooltip("Drag the InputManager.asset here so the Keybinds tab can read & rebind player actions.")]
+    [SerializeField] private InputManager inputManager;
+    private Slider heightOffsetSlider;
+    private Slider depthOffsetSlider;
+    private TextMeshProUGUI heightOffsetValueText;
+    private TextMeshProUGUI depthOffsetValueText;
+    private Button optionsBackButton;
+    private Button mainMenuOptionsButton;
+    private GameObject optionsReturnPanel;
+    private GameObject cameraTabContent;
+    private GameObject keybindsTabContent;
+    private Button cameraTabButton;
+    private Button keybindsTabButton;
+    private readonly List<KeybindRow> keybindRows = new();
+    private bool isRebinding;
+
+    class KeybindRow
+    {
+        public string displayName;
+        public System.Func<UnityEngine.InputSystem.InputAction> getAction;
+        public TextMeshProUGUI bindingDisplayText;
+        public Button rebindButton;
+        public TextMeshProUGUI rebindButtonLabel;
+    }
 
     [Header("Main Menu")]
     [SerializeField] private Button mainMenuMusicToggleButton;
@@ -75,6 +103,8 @@ public class UIManager : MonoBehaviour
         SetPanelActive(gameOverPanel, false);
         EnsurePausePanel();
         SetPanelActive(pausePanel, false);
+        EnsureOptionsPanel();
+        SetPanelActive(optionsPanel, false);
         if (announcementText) announcementText.gameObject.SetActive(false);
         if (playAgainButton == null && gameOverPanel != null)
             playAgainButton = gameOverPanel.GetComponentInChildren<Button>(true);
@@ -96,6 +126,7 @@ public class UIManager : MonoBehaviour
             Cursor.visible = true;
             EnsureMainMenuMatchModeToggle();
             EnsureMainMenuAudioToggle();
+            EnsureMainMenuOptionsButton();
             ApplyMainMenuSceneAudioMute(IsMainMenuMusicMuted());
         }
     }
@@ -306,6 +337,80 @@ public class UIManager : MonoBehaviour
         UnityEngine.SceneManagement.SceneManager.LoadScene("MainMenu");
     }
 
+    public void OnOptionsButton()
+    {
+        EnsureOptionsPanel();
+        if (optionsPanel == null) return;
+
+        // Remember which panel asked for Options so Back returns there.
+        if (pausePanel != null && pausePanel.activeSelf)
+            optionsReturnPanel = pausePanel;
+        else if (mainMenuPanel != null && mainMenuPanel.activeSelf)
+            optionsReturnPanel = mainMenuPanel;
+        else
+            optionsReturnPanel = mainMenuPanel != null ? mainMenuPanel : pausePanel;
+
+        SetPanelActive(optionsReturnPanel, false);
+        SetPanelActive(optionsPanel, true);
+
+        if (heightOffsetSlider != null) heightOffsetSlider.SetValueWithoutNotify(CameraSettings.LoadHeightOffset());
+        if (depthOffsetSlider != null)  depthOffsetSlider.SetValueWithoutNotify(CameraSettings.LoadDepthOffset());
+        RefreshHeightOffsetLabel();
+        RefreshDepthOffsetLabel();
+
+        EnsureUiInputReady();
+        if (optionsBackButton != null && EventSystem.current != null)
+            EventSystem.current.SetSelectedGameObject(optionsBackButton.gameObject);
+    }
+
+    public void OnCloseOptionsButton()
+    {
+        SetPanelActive(optionsPanel, false);
+        if (optionsReturnPanel != null)
+            SetPanelActive(optionsReturnPanel, true);
+
+        if (optionsReturnPanel == pausePanel && resumeButton != null && EventSystem.current != null)
+            EventSystem.current.SetSelectedGameObject(resumeButton.gameObject);
+
+        optionsReturnPanel = null;
+    }
+
+    void OnHeightOffsetChanged(float value)
+    {
+        CameraSettings.SaveHeightOffset(value);
+        ApplyLiveCameraSettings();
+        RefreshHeightOffsetLabel();
+    }
+
+    void OnDepthOffsetChanged(float value)
+    {
+        CameraSettings.SaveDepthOffset(value);
+        ApplyLiveCameraSettings();
+        RefreshDepthOffsetLabel();
+    }
+
+    void ApplyLiveCameraSettings()
+    {
+        CameraController cam = FindAnyObjectByType<CameraController>();
+        if (cam == null) return;
+        cam.heightOffset = CameraSettings.LoadHeightOffset();
+        cam.depthOffset  = CameraSettings.LoadDepthOffset();
+    }
+
+    void RefreshHeightOffsetLabel()
+    {
+        if (heightOffsetValueText == null) return;
+        float value = heightOffsetSlider != null ? heightOffsetSlider.value : CameraSettings.LoadHeightOffset();
+        heightOffsetValueText.text = value.ToString("F1");
+    }
+
+    void RefreshDepthOffsetLabel()
+    {
+        if (depthOffsetValueText == null) return;
+        float value = depthOffsetSlider != null ? depthOffsetSlider.value : CameraSettings.LoadDepthOffset();
+        depthOffsetValueText.text = value.ToString("F1");
+    }
+
     public void OnMainMenuMusicToggle()
     {
         bool muted;
@@ -358,6 +463,7 @@ public class UIManager : MonoBehaviour
         if (hudPanel == null) hudPanel = FindSceneObjectByName("HUDPanel");
         if (gameOverPanel == null) gameOverPanel = FindSceneObjectByName("GameOverPanel");
         if (pausePanel == null) pausePanel = FindSceneObjectByName("PausePanel");
+        if (optionsPanel == null) optionsPanel = FindSceneObjectByName("OptionsPanel");
     }
 
     GameObject FindSceneObjectByName(string objectName)
@@ -425,6 +531,16 @@ public class UIManager : MonoBehaviour
     {
         if (!CanUseSinglePlayerPause()) return;
 
+        // While rebinding, let the InputAction consume ESC for cancel — don't unpause or close panels.
+        if (isRebinding) return;
+
+        // If Options is up over the pause panel, ESC closes it back to pause instead of unpausing.
+        if (optionsPanel != null && optionsPanel.activeSelf && isPaused)
+        {
+            OnCloseOptionsButton();
+            return;
+        }
+
         if (isPaused)
         {
             SetPaused(false);
@@ -469,6 +585,8 @@ public class UIManager : MonoBehaviour
         {
             Time.timeScale = timeScaleBeforePause > 0f ? timeScaleBeforePause : 1f;
             SetPanelActive(pausePanel, false);
+            SetPanelActive(optionsPanel, false);
+            optionsReturnPanel = null;
             SetGameplayInputPaused(false);
 
             if (EventSystem.current != null)
@@ -534,11 +652,15 @@ public class UIManager : MonoBehaviour
 
         resumeButton = templateButton;
         resumeButton.name = "ResumeButton";
-        ConfigurePauseButton(resumeButton, "Resume", OnResumeButton, new Vector2(0f, 40f));
+        ConfigurePauseButton(resumeButton, "Resume", OnResumeButton, new Vector2(0f, 80f));
+
+        pauseOptionsButton = Instantiate(resumeButton, resumeButton.transform.parent);
+        pauseOptionsButton.name = "OptionsButton";
+        ConfigurePauseButton(pauseOptionsButton, "Options", OnOptionsButton, new Vector2(0f, 0f));
 
         pauseQuitButton = Instantiate(resumeButton, resumeButton.transform.parent);
         pauseQuitButton.name = "QuitButton";
-        ConfigurePauseButton(pauseQuitButton, "Quit", OnPauseQuitButton, new Vector2(0f, -40f));
+        ConfigurePauseButton(pauseQuitButton, "Quit", OnPauseQuitButton, new Vector2(0f, -80f));
     }
 
     void ConfigurePauseButtons()
@@ -550,6 +672,13 @@ public class UIManager : MonoBehaviour
                 resumeButton = existingResume.GetComponent<Button>();
         }
 
+        if (pauseOptionsButton == null && pausePanel != null)
+        {
+            Transform existingOptions = pausePanel.transform.Find("OptionsButton");
+            if (existingOptions != null)
+                pauseOptionsButton = existingOptions.GetComponent<Button>();
+        }
+
         if (pauseQuitButton == null && pausePanel != null)
         {
             Transform existingQuit = pausePanel.transform.Find("QuitButton");
@@ -557,8 +686,426 @@ public class UIManager : MonoBehaviour
                 pauseQuitButton = existingQuit.GetComponent<Button>();
         }
 
-        ConfigurePauseButton(resumeButton, "Resume", OnResumeButton, new Vector2(0f, 40f));
-        ConfigurePauseButton(pauseQuitButton, "Quit", OnPauseQuitButton, new Vector2(0f, -40f));
+        // PausePanel saved before the Options feature only has Resume + Quit. Create the
+        // missing Options button by cloning Resume so the pause menu is always complete.
+        if (pauseOptionsButton == null && resumeButton != null)
+        {
+            pauseOptionsButton = Instantiate(resumeButton, resumeButton.transform.parent);
+            pauseOptionsButton.name = "OptionsButton";
+        }
+
+        ConfigurePauseButton(resumeButton, "Resume", OnResumeButton, new Vector2(0f, 80f));
+        ConfigurePauseButton(pauseOptionsButton, "Options", OnOptionsButton, new Vector2(0f, 0f));
+        ConfigurePauseButton(pauseQuitButton, "Quit", OnPauseQuitButton, new Vector2(0f, -80f));
+    }
+
+    void EnsureMainMenuOptionsButton()
+    {
+        if (mainMenuPanel == null) return;
+
+        Transform existing = mainMenuPanel.transform.Find("OptionsButton");
+        if (existing == null)
+        {
+            Debug.LogWarning("[UIManager] OptionsButton missing from MainMenuPanel hierarchy.");
+            return;
+        }
+
+        mainMenuOptionsButton = existing.GetComponent<Button>();
+        if (mainMenuOptionsButton == null) return;
+
+        // Re-bind onClick at runtime so a Wire-Menu-Buttons run isn't strictly required
+        // (matches how the music + match-mode toggles bind themselves).
+        mainMenuOptionsButton.onClick = new Button.ButtonClickedEvent();
+        mainMenuOptionsButton.onClick.AddListener(OnOptionsButton);
+        mainMenuOptionsButton.interactable = true;
+    }
+
+    void EnsureOptionsPanel()
+    {
+        if (optionsPanel != null)
+        {
+            ConfigureOptionsPanel();
+            return;
+        }
+
+        Transform canvasParent = null;
+        if (gameOverPanel != null) canvasParent = gameOverPanel.transform.parent;
+        else if (mainMenuPanel != null) canvasParent = mainMenuPanel.transform.parent;
+        if (canvasParent == null)
+        {
+            Canvas canvas = FindAnyObjectByType<Canvas>();
+            if (canvas != null) canvasParent = canvas.transform;
+        }
+        if (canvasParent == null) return;
+
+        optionsPanel = new GameObject("OptionsPanel", typeof(RectTransform), typeof(Image));
+        optionsPanel.transform.SetParent(canvasParent, false);
+
+        RectTransform rootRect = optionsPanel.GetComponent<RectTransform>();
+        rootRect.anchorMin = Vector2.zero;
+        rootRect.anchorMax = Vector2.one;
+        rootRect.offsetMin = Vector2.zero;
+        rootRect.offsetMax = Vector2.zero;
+
+        Image bg = optionsPanel.GetComponent<Image>();
+        bg.color = new Color(0f, 0f, 0f, 0.85f);
+
+        BuildOptionsPanelContent();
+    }
+
+    void BuildOptionsPanelContent()
+    {
+        CreateLabel(optionsPanel.transform, "TitleText", "Options", 56,
+            new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f),
+            new Vector2(0f, -60f), new Vector2(800f, 100f),
+            TMPro.TextAlignmentOptions.Center);
+
+        cameraTabButton = BuildTabButton("CameraTabButton", "Camera",
+            new Vector2(-110f, -160f), () => ShowOptionsTab(true));
+        keybindsTabButton = BuildTabButton("KeybindsTabButton", "Keybinds",
+            new Vector2(110f, -160f), () => ShowOptionsTab(false));
+
+        cameraTabContent   = BuildTabContent("CameraContent");
+        keybindsTabContent = BuildTabContent("KeybindsContent");
+
+        BuildCameraTabContent(cameraTabContent.transform);
+        BuildKeybindsTabContent(keybindsTabContent.transform);
+
+        optionsBackButton = BuildOptionsBackButton("BackButton", "Back",
+            new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f),
+            new Vector2(0f, 80f), new Vector2(220f, 60f),
+            OnCloseOptionsButton);
+
+        ShowOptionsTab(true);
+    }
+
+    void BuildCameraTabContent(Transform parent)
+    {
+        BuildSliderRow(parent, "HeightOffset", "Height Offset",
+            CameraSettings.MinHeightOffset, CameraSettings.MaxHeightOffset,
+            CameraSettings.LoadHeightOffset(),
+            new Vector2(0f, -40f),
+            OnHeightOffsetChanged,
+            out heightOffsetSlider, out heightOffsetValueText);
+
+        BuildSliderRow(parent, "DepthOffset", "Depth Offset",
+            CameraSettings.MinDepthOffset, CameraSettings.MaxDepthOffset,
+            CameraSettings.LoadDepthOffset(),
+            new Vector2(0f, -120f),
+            OnDepthOffsetChanged,
+            out depthOffsetSlider, out depthOffsetValueText);
+    }
+
+    void BuildKeybindsTabContent(Transform parent)
+    {
+        keybindRows.Clear();
+
+        // Defer action lookups via lambdas so we can build rows even before InputManager.Initialize runs.
+        AddKeybindRow(parent, "Forehand", () => inputManager?.actions?.Player.SwingForehand,  -10f);
+        AddKeybindRow(parent, "Backhand", () => inputManager?.actions?.Player.SwingBackhand, -65f);
+        AddKeybindRow(parent, "Dink",     () => inputManager?.actions?.Player.Dink,          -120f);
+        AddKeybindRow(parent, "Lob",      () => inputManager?.actions?.Player.Lob,           -175f);
+        AddKeybindRow(parent, "Smash",    () => inputManager?.actions?.Player.Smash,         -230f);
+        AddKeybindRow(parent, "Block",    () => inputManager?.actions?.Player.Block,         -285f);
+    }
+
+    void AddKeybindRow(Transform parent, string displayName,
+        System.Func<UnityEngine.InputSystem.InputAction> getAction, float yOffset)
+    {
+        KeybindRow row = new KeybindRow { displayName = displayName, getAction = getAction };
+
+        GameObject rowGO = new GameObject(displayName + "Row", typeof(RectTransform));
+        rowGO.transform.SetParent(parent, false);
+        RectTransform rowRect = rowGO.GetComponent<RectTransform>();
+        rowRect.anchorMin = new Vector2(0.5f, 1f);
+        rowRect.anchorMax = new Vector2(0.5f, 1f);
+        rowRect.pivot = new Vector2(0.5f, 1f);
+        rowRect.anchoredPosition = new Vector2(0f, yOffset);
+        rowRect.sizeDelta = new Vector2(720f, 50f);
+
+        // Action label (left)
+        CreateLabel(rowGO.transform, displayName + "Label", displayName, 26,
+            new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(0f, 0.5f),
+            new Vector2(0f, 0f), new Vector2(220f, 50f),
+            TMPro.TextAlignmentOptions.MidlineLeft);
+
+        // Current binding text (middle)
+        GameObject bindingGO = CreateLabel(rowGO.transform, displayName + "Binding", "—", 24,
+            new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(0f, 0.5f),
+            new Vector2(240f, 0f), new Vector2(280f, 50f),
+            TMPro.TextAlignmentOptions.Midline);
+        row.bindingDisplayText = bindingGO.GetComponent<TextMeshProUGUI>();
+
+        // Rebind button (right)
+        row.rebindButton = BuildOptionsBackButton(displayName + "RebindButton", "Rebind",
+            new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(0f, 0.5f),
+            new Vector2(540f, 0f), new Vector2(160f, 40f),
+            () => StartRebindRow(row));
+        // Reparent the button onto this row (BuildOptionsBackButton parented it to optionsPanel).
+        row.rebindButton.transform.SetParent(rowGO.transform, false);
+        RectTransform btnRect = row.rebindButton.GetComponent<RectTransform>();
+        btnRect.anchorMin = new Vector2(0f, 0.5f);
+        btnRect.anchorMax = new Vector2(0f, 0.5f);
+        btnRect.pivot = new Vector2(0f, 0.5f);
+        btnRect.anchoredPosition = new Vector2(540f, -20f);
+        btnRect.sizeDelta = new Vector2(160f, 40f);
+        row.rebindButtonLabel = row.rebindButton.GetComponentInChildren<TextMeshProUGUI>(true);
+
+        keybindRows.Add(row);
+    }
+
+    Button BuildTabButton(string objName, string label, Vector2 anchoredPos, UnityEngine.Events.UnityAction onClick)
+    {
+        Button btn = BuildOptionsBackButton(objName, label,
+            new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f),
+            anchoredPos, new Vector2(180f, 50f),
+            onClick);
+        return btn;
+    }
+
+    GameObject BuildTabContent(string objName)
+    {
+        GameObject go = new GameObject(objName, typeof(RectTransform));
+        go.transform.SetParent(optionsPanel.transform, false);
+        RectTransform rect = go.GetComponent<RectTransform>();
+        rect.anchorMin = new Vector2(0.5f, 1f);
+        rect.anchorMax = new Vector2(0.5f, 1f);
+        rect.pivot = new Vector2(0.5f, 1f);
+        rect.anchoredPosition = new Vector2(0f, -210f);
+        rect.sizeDelta = new Vector2(800f, 420f);
+        return go;
+    }
+
+    void ShowOptionsTab(bool cameraActive)
+    {
+        if (cameraTabContent != null)   cameraTabContent.SetActive(cameraActive);
+        if (keybindsTabContent != null) keybindsTabContent.SetActive(!cameraActive);
+
+        Color active   = Color.white;
+        Color inactive = new Color(0.55f, 0.55f, 0.55f, 1f);
+        if (cameraTabButton != null)
+        {
+            Image img = cameraTabButton.GetComponent<Image>();
+            if (img != null) img.color = cameraActive ? active : inactive;
+        }
+        if (keybindsTabButton != null)
+        {
+            Image img = keybindsTabButton.GetComponent<Image>();
+            if (img != null) img.color = cameraActive ? inactive : active;
+        }
+
+        if (!cameraActive)
+        {
+            EnsureInputManagerInitialized();
+            RefreshKeybindDisplays();
+        }
+    }
+
+    void EnsureInputManagerInitialized()
+    {
+        if (inputManager == null) return;
+        inputManager.Initialize();
+    }
+
+    void RefreshKeybindDisplays()
+    {
+        foreach (KeybindRow row in keybindRows)
+        {
+            UnityEngine.InputSystem.InputAction action = row.getAction?.Invoke();
+            if (row.bindingDisplayText == null) continue;
+            row.bindingDisplayText.text = action != null
+                ? inputManager.GetBindingDisplayString(action, 0)
+                : "—";
+        }
+    }
+
+    void StartRebindRow(KeybindRow row)
+    {
+        if (isRebinding) return;
+        if (inputManager == null) { Debug.LogWarning("[UIManager] InputManager reference missing — cannot rebind."); return; }
+
+        UnityEngine.InputSystem.InputAction action = row.getAction?.Invoke();
+        if (action == null) return;
+
+        isRebinding = true;
+        if (row.bindingDisplayText != null) row.bindingDisplayText.text = "Press a key…";
+        SetAllRebindButtonsInteractable(false);
+
+        inputManager.StartRebind(action, 0, () =>
+        {
+            isRebinding = false;
+            SetAllRebindButtonsInteractable(true);
+            RefreshKeybindDisplays();
+        });
+    }
+
+    void SetAllRebindButtonsInteractable(bool interactable)
+    {
+        foreach (KeybindRow row in keybindRows)
+            if (row.rebindButton != null) row.rebindButton.interactable = interactable;
+    }
+
+    void BuildSliderRow(Transform parent, string id, string label, float min, float max, float initial,
+        Vector2 anchoredPos,
+        UnityEngine.Events.UnityAction<float> onChanged,
+        out Slider slider, out TextMeshProUGUI valueText)
+    {
+        GameObject row = new GameObject(id + "Row", typeof(RectTransform));
+        row.transform.SetParent(parent, false);
+        RectTransform rowRect = row.GetComponent<RectTransform>();
+        rowRect.anchorMin = new Vector2(0.5f, 1f);
+        rowRect.anchorMax = new Vector2(0.5f, 1f);
+        rowRect.pivot = new Vector2(0.5f, 1f);
+        rowRect.anchoredPosition = anchoredPos;
+        rowRect.sizeDelta = new Vector2(720f, 60f);
+
+        CreateLabel(row.transform, id + "Label", label, 28,
+            new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(0f, 0.5f),
+            new Vector2(0f, 0f), new Vector2(220f, 50f),
+            TMPro.TextAlignmentOptions.MidlineLeft);
+
+        GameObject sliderGO = DefaultControls.CreateSlider(default(DefaultControls.Resources));
+        sliderGO.name = id + "Slider";
+        sliderGO.transform.SetParent(row.transform, false);
+        slider = sliderGO.GetComponent<Slider>();
+        slider.minValue = min;
+        slider.maxValue = max;
+        slider.SetValueWithoutNotify(initial);
+
+        RectTransform sliderRect = sliderGO.GetComponent<RectTransform>();
+        sliderRect.anchorMin = new Vector2(0f, 0.5f);
+        sliderRect.anchorMax = new Vector2(0f, 0.5f);
+        sliderRect.pivot = new Vector2(0f, 0.5f);
+        sliderRect.anchoredPosition = new Vector2(240f, -10f);
+        sliderRect.sizeDelta = new Vector2(380f, 30f);
+
+        GameObject valueGO = CreateLabel(row.transform, id + "Value", initial.ToString("F1"), 28,
+            new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(1f, 0.5f),
+            new Vector2(0f, 0f), new Vector2(80f, 50f),
+            TMPro.TextAlignmentOptions.MidlineRight);
+        valueText = valueGO.GetComponent<TextMeshProUGUI>();
+
+        slider.onValueChanged.AddListener(onChanged);
+    }
+
+    GameObject CreateLabel(Transform parent, string objName, string text, float fontSize,
+        Vector2 anchorMin, Vector2 anchorMax, Vector2 pivot,
+        Vector2 anchoredPos, Vector2 size,
+        TMPro.TextAlignmentOptions alignment)
+    {
+        GameObject go = new GameObject(objName, typeof(RectTransform));
+        go.transform.SetParent(parent, false);
+        TextMeshProUGUI tmp = go.AddComponent<TextMeshProUGUI>();
+        tmp.text = text;
+        tmp.fontSize = fontSize;
+        tmp.alignment = alignment;
+        tmp.color = Color.white;
+        tmp.enableWordWrapping = false;
+
+        RectTransform rect = go.GetComponent<RectTransform>();
+        rect.anchorMin = anchorMin;
+        rect.anchorMax = anchorMax;
+        rect.pivot = pivot;
+        rect.anchoredPosition = anchoredPos;
+        rect.sizeDelta = size;
+        return go;
+    }
+
+    Button BuildOptionsBackButton(string objName, string label,
+        Vector2 anchorMin, Vector2 anchorMax, Vector2 pivot,
+        Vector2 anchoredPos, Vector2 size,
+        UnityEngine.Events.UnityAction onClick)
+    {
+        // Prefer cloning an existing TMP-styled button so visuals match the rest of the project.
+        Button template = resumeButton;
+        if (template == null && pausePanel != null)
+            template = pausePanel.GetComponentInChildren<Button>(true);
+        if (template == null && mainMenuPanel != null)
+            template = mainMenuPanel.GetComponentInChildren<Button>(true);
+
+        Button btn;
+        if (template != null)
+        {
+            btn = Instantiate(template, optionsPanel.transform);
+            btn.name = objName;
+            TextMeshProUGUI text = btn.GetComponentInChildren<TextMeshProUGUI>(true);
+            if (text != null) text.text = label;
+        }
+        else
+        {
+            GameObject btnGO = DefaultControls.CreateButton(default(DefaultControls.Resources));
+            btnGO.name = objName;
+            btnGO.transform.SetParent(optionsPanel.transform, false);
+            Text legacyText = btnGO.GetComponentInChildren<Text>();
+            if (legacyText != null) legacyText.text = label;
+            btn = btnGO.GetComponent<Button>();
+        }
+
+        btn.onClick = new Button.ButtonClickedEvent();
+        btn.onClick.AddListener(onClick);
+        btn.interactable = true;
+
+        RectTransform btnRect = btn.GetComponent<RectTransform>();
+        btnRect.anchorMin = anchorMin;
+        btnRect.anchorMax = anchorMax;
+        btnRect.pivot = pivot;
+        btnRect.anchoredPosition = anchoredPos;
+        btnRect.sizeDelta = size;
+        return btn;
+    }
+
+    void ConfigureOptionsPanel()
+    {
+        // Re-bind references for a scene-authored OptionsPanel (rare, used if someone hand-builds it later).
+        if (optionsPanel == null) return;
+
+        if (heightOffsetSlider == null)
+            heightOffsetSlider = FindChildComponent<Slider>(optionsPanel.transform, "HeightOffsetSlider");
+        if (depthOffsetSlider == null)
+            depthOffsetSlider = FindChildComponent<Slider>(optionsPanel.transform, "DepthOffsetSlider");
+        if (heightOffsetValueText == null)
+            heightOffsetValueText = FindChildComponent<TextMeshProUGUI>(optionsPanel.transform, "HeightOffsetValue");
+        if (depthOffsetValueText == null)
+            depthOffsetValueText = FindChildComponent<TextMeshProUGUI>(optionsPanel.transform, "DepthOffsetValue");
+        if (optionsBackButton == null)
+            optionsBackButton = FindChildComponent<Button>(optionsPanel.transform, "BackButton");
+
+        if (heightOffsetSlider != null)
+        {
+            heightOffsetSlider.minValue = CameraSettings.MinHeightOffset;
+            heightOffsetSlider.maxValue = CameraSettings.MaxHeightOffset;
+            heightOffsetSlider.SetValueWithoutNotify(CameraSettings.LoadHeightOffset());
+            heightOffsetSlider.onValueChanged.RemoveListener(OnHeightOffsetChanged);
+            heightOffsetSlider.onValueChanged.AddListener(OnHeightOffsetChanged);
+        }
+        if (depthOffsetSlider != null)
+        {
+            depthOffsetSlider.minValue = CameraSettings.MinDepthOffset;
+            depthOffsetSlider.maxValue = CameraSettings.MaxDepthOffset;
+            depthOffsetSlider.SetValueWithoutNotify(CameraSettings.LoadDepthOffset());
+            depthOffsetSlider.onValueChanged.RemoveListener(OnDepthOffsetChanged);
+            depthOffsetSlider.onValueChanged.AddListener(OnDepthOffsetChanged);
+        }
+        if (optionsBackButton != null)
+        {
+            optionsBackButton.onClick = new Button.ButtonClickedEvent();
+            optionsBackButton.onClick.AddListener(OnCloseOptionsButton);
+        }
+    }
+
+    static T FindChildComponent<T>(Transform root, string objName) where T : Component
+    {
+        if (root.name == objName)
+        {
+            T self = root.GetComponent<T>();
+            if (self != null) return self;
+        }
+        for (int i = 0; i < root.childCount; i++)
+        {
+            T result = FindChildComponent<T>(root.GetChild(i), objName);
+            if (result != null) return result;
+        }
+        return null;
     }
 
     void ConfigurePauseButton(Button button, string label, UnityEngine.Events.UnityAction action, Vector2 position)

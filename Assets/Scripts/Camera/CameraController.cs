@@ -33,6 +33,14 @@ public class CameraController : MonoBehaviour
         _teamId = ResolveTeamId(player);
     }
 
+    private void Awake()
+    {
+        // Player-tunable offsets persist via PlayerPrefs; inspector defaults
+        // act as fallback when no saved value exists.
+        heightOffset = CameraSettings.LoadHeightOffset();
+        depthOffset  = CameraSettings.LoadDepthOffset();
+    }
+
     private void Start()
     {
         // Multiplayer: camera target is pushed via RegisterLocalPlayer().

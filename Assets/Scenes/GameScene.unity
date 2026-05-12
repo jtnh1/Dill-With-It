@@ -3711,6 +3711,7 @@ MonoBehaviour:
   serveXOffset: 5
   playerServeY: 0.1
   serveZoneClampMargin: 0.45
+  duplicateBounceIgnoreSeconds: 0.1
 --- !u!1 &720139618
 GameObject:
   m_ObjectHideFlags: 0
@@ -6075,6 +6076,13 @@ MonoBehaviour:
   playAgainButton: {fileID: 0}
   resumeButton: {fileID: 0}
   pauseQuitButton: {fileID: 0}
+  pauseOptionsButton: {fileID: 0}
+  optionsPanel: {fileID: 0}
+  inputManager: {fileID: 11400000, guid: 6db1364ddf1a3c940bc919436d6a1f2e, type: 2}
+  mainMenuMusicToggleButton: {fileID: 0}
+  mainMenuMusicToggleText: {fileID: 0}
+  mainMenuMatchModeToggleButton: {fileID: 0}
+  mainMenuMatchModeToggleText: {fileID: 0}
   networkManagerPrefab: {fileID: 0}
 --- !u!1 &1102727422
 GameObject:
@@ -7883,7 +7891,7 @@ GameObject:
   - component: {fileID: 1444148686}
   m_Layer: 0
   m_Name: NetCollider
-  m_TagString: Untagged
+  m_TagString: Net
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0

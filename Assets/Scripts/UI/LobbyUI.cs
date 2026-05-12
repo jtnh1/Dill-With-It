@@ -1,12 +1,9 @@
 using UnityEngine;
 using TMPro;
 using UnityEngine.UI;
-using Mirror;
 
 public class LobbyUI : MonoBehaviour
 {
-    public Transform playerListParent;
-    public GameObject playerEntryPrefab;
     public Button readyButton;
     public Button startButton;
     public TextMeshProUGUI statusText;
@@ -30,15 +27,25 @@ public class LobbyUI : MonoBehaviour
         NetworkLobbyManager.Instance?.StartMatch();
     }
 
-    public void RefreshPlayerList(System.Collections.Generic.List<LobbyPlayerData> players)
+    public void OnBackButton()
     {
-        foreach (Transform t in playerListParent) Destroy(t.gameObject);
-        foreach (var p in players)
+        NetworkLobbyManager.Instance?.LeaveLobby();
+
+        // Reset local ready state so the button label matches a fresh visit next time.
+        isReady = false;
+        if (readyButton != null)
         {
-            var entry = Instantiate(playerEntryPrefab, playerListParent);
-            entry.GetComponentInChildren<TextMeshProUGUI>().text = $"{p.name}  {(p.isReady ? "R" : "...")}";
+            TextMeshProUGUI label = readyButton.GetComponentInChildren<TextMeshProUGUI>();
+            if (label != null) label.text = "Ready";
         }
 
+        UIManager.Instance?.ShowMainMenu();
+    }
+
+    // Lobby player list rendering moved to Mirror's NetworkRoomPlayer OnGUI overlay; this
+    // refresh is only used to gate the host's Start button on player count + ready state.
+    public void RefreshPlayerList(System.Collections.Generic.List<LobbyPlayerData> players)
+    {
         int requiredPlayers = NetworkLobbyManager.Instance != null
             ? NetworkLobbyManager.Instance.RequiredPlayerCount
             : 2;

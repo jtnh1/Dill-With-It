@@ -32,6 +32,9 @@ public class JoinPanel : MonoBehaviour
 
     public void OnBackButton()
     {
+        // Cancel any in-flight Steam join so a late OnRoomClientConnect doesn't yank
+        // the player into the LobbyPanel after they've already chosen to leave.
+        NetworkLobbyManager.Instance?.LeaveLobby();
         gameObject.SetActive(false);
         UIManager.Instance?.ShowMainMenu();
     }
